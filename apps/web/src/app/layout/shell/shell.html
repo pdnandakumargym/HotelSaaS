@@ -1,0 +1,88 @@
+<a class="skip-link" href="#main">Skip to content</a>
+
+<aside class="sidebar" [class.sidebar--open]="menuOpen()" id="sidebar" [attr.aria-label]="portal() === 'admin' ? 'Admin navigation' : 'Main navigation'">
+  <div class="brand">
+    <span class="brand__mark"><ss-icon name="logo" [size]="20" /></span>
+    <span class="brand__name">StaySync</span>
+    @if (portal() === 'admin') {
+      <span class="brand__tag">Admin</span>
+    }
+  </div>
+
+  <nav>
+    <ul>
+      @for (item of visibleNav(); track item.path) {
+        <li>
+          <a [routerLink]="item.path" routerLinkActive="active" [attr.aria-label]="item.status === 'planned' ? item.label + ' (planned, milestone ' + item.milestone + ')' : null">
+            <ss-icon [name]="item.icon" />
+            <span class="label">{{ item.label }}</span>
+            @if (item.status === 'planned') {
+              <span class="soon" aria-hidden="true">M{{ item.milestone }}</span>
+            }
+          </a>
+        </li>
+      }
+    </ul>
+  </nav>
+
+  <div class="build-card">
+    <p class="build-card__title">Milestone 5 · Booking.com sync</p>
+    <p class="build-card__text">Items marked <span class="soon">M#</span> are planned and show no data yet.</p>
+  </div>
+</aside>
+
+@if (menuOpen()) {
+  <button type="button" class="scrim" aria-label="Close menu" (click)="toggleMenu()"></button>
+}
+
+<div class="main-col">
+  <header class="topbar">
+    <button type="button" class="icon-btn menu-btn" (click)="toggleMenu()" [attr.aria-expanded]="menuOpen()" aria-controls="sidebar" aria-label="Toggle navigation">
+      <ss-icon [name]="menuOpen() ? 'close' : 'menu'" />
+    </button>
+
+    @if (portal() === 'owner') {
+      <label class="property-select">
+        <span class="ss-visually-hidden">Current organization</span>
+        <select disabled>
+          <option>{{ auth.currentOrg()?.organizationName ?? 'No organization' }}</option>
+        </select>
+      </label>
+    } @else {
+      <span class="topbar__title">Platform administration</span>
+    }
+
+    <div class="topbar__spacer"></div>
+
+    @if (canSwitch()) {
+      <a class="portal-switch" [routerLink]="portal() === 'owner' ? '/admin' : '/app'">
+        <ss-icon name="swap" [size]="16" />
+        {{ portal() === 'owner' ? 'Admin portal' : 'Owner portal' }}
+      </a>
+    }
+
+    <div class="user">
+      <button type="button" class="user-chip" (click)="userMenuOpen.set(!userMenuOpen())" [attr.aria-expanded]="userMenuOpen()" aria-haspopup="menu" aria-controls="user-menu">
+        <span class="avatar" aria-hidden="true">{{ initials() }}</span>
+        <span class="user-chip__text">
+          <strong>{{ auth.user()?.displayName }}</strong>
+          <small>{{ roleLabel() }}</small>
+        </span>
+      </button>
+      @if (userMenuOpen()) {
+        <div class="user-menu" id="user-menu" role="menu">
+          <p class="user-menu__email">{{ auth.user()?.email }}</p>
+          <a role="menuitem" routerLink="/app/settings">Profile &amp; security</a>
+          <button role="menuitem" type="button" (click)="signOut()">Sign out</button>
+        </div>
+      }
+    </div>
+  </header>
+
+  @if (portal() === 'owner' && auth.currentOrg()?.organizationStatus === 'SUSPENDED') {
+    <p class="suspended" role="alert">This organization is suspended. Its data is read-blocked until it is reactivated. Contact support.</p>
+  }
+  <main id="main" class="content" tabindex="-1">
+    <router-outlet />
+  </main>
+</div>

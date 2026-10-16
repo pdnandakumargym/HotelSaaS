@@ -1,0 +1,100 @@
+@if (message(); as m) {
+  <p class="ss-alert" [class.ss-alert--success]="m.tone === 'success'" [class.ss-alert--error]="m.tone === 'error'" role="status">{{ m.text }}</p>
+}
+
+<section class="ss-card">
+  <h2 class="ss-card__title">
+    Room types
+    @if (canWrite() && !editing()) { <button type="button" class="ss-btn small-btn" (click)="newType()">Add room type</button> }
+  </h2>
+
+  @if (editing()) {
+    <form class="type-form" [formGroup]="typeForm" (ngSubmit)="saveType()" novalidate>
+      <div class="grid">
+        <label class="ss-field"><span>Name</span><input class="ss-input" formControlName="name" placeholder="Deluxe Room" /></label>
+        <label class="ss-field"><span>Code</span><input class="ss-input" formControlName="code" placeholder="DLX" maxlength="20" /></label>
+        <label class="ss-field"><span>Status</span>
+          <select class="ss-input" formControlName="status"><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select>
+        </label>
+        <label class="ss-field"><span>Base occupancy</span><input class="ss-input" type="number" min="1" formControlName="baseOccupancy" /></label>
+        <label class="ss-field"><span>Max adults</span><input class="ss-input" type="number" min="1" formControlName="maxAdults" /></label>
+        <label class="ss-field"><span>Max children</span><input class="ss-input" type="number" min="0" formControlName="maxChildren" /></label>
+        <label class="ss-field"><span>Max occupancy</span><input class="ss-input" type="number" min="1" formControlName="maxOccupancy" /></label>
+        <label class="ss-field"><span>Beds</span><input class="ss-input" formControlName="bedConfiguration" placeholder="1 king bed" /></label>
+        <label class="ss-field"><span>Size (m²)</span><input class="ss-input" type="number" min="1" step="0.5" formControlName="sizeSqm" /></label>
+        <label class="ss-field full"><span>Description</span><input class="ss-input" formControlName="description" /></label>
+      </div>
+      <details>
+        <summary>Room amenities ({{ typeAmenities().length }})</summary>
+        <ss-amenity-picker [amenities]="amenities()" scope="room" [(selected)]="typeAmenities" />
+      </details>
+      <div class="actions">
+        <button type="button" class="ss-btn ss-btn--ghost" (click)="editing.set(null)">Cancel</button>
+        <button type="submit" class="ss-btn" [disabled]="busy()">Save room type</button>
+      </div>
+    </form>
+  }
+
+  <div class="ss-table-wrap">
+    <table class="ss-table">
+      <thead><tr><th>Room type</th><th>Code</th><th>Occupancy</th><th>Rooms</th><th>Status</th><th><span class="ss-visually-hidden">Actions</span></th></tr></thead>
+      <tbody>
+        @for (t of roomTypes(); track t.id) {
+          <tr>
+            <td><strong>{{ t.name }}</strong>@if (t.bedConfiguration) { <br /><small class="ss-muted">{{ t.bedConfiguration }}</small> }</td>
+            <td><code>{{ t.code }}</code></td>
+            <td>{{ t.maxAdults }} adults · {{ t.maxChildren }} children (max {{ t.maxOccupancy }})</td>
+            <td>{{ roomsOf(t.id).length }}</td>
+            <td><ss-status-pill [tone]="t.status === 'ACTIVE' ? 'success' : 'neutral'">{{ t.status === 'ACTIVE' ? 'Active' : 'Inactive' }}</ss-status-pill></td>
+            <td class="right">
+              @if (canWrite()) {
+                <button type="button" class="ss-link-btn" (click)="editType(t)">Edit</button>
+                · <button type="button" class="ss-link-btn danger" (click)="deleteType(t)">Delete</button>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr><td colspan="6" class="ss-muted">No room types yet. Add one, for example "Deluxe Room".</td></tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ss-card">
+  <h2 class="ss-card__title">Rooms &amp; units</h2>
+  @if (canWrite() && roomTypes().length) {
+    <form class="add-rooms" [formGroup]="roomForm" (ngSubmit)="addRooms()" novalidate>
+      <label class="ss-field"><span>Room type</span>
+        <select class="ss-input" formControlName="roomTypeId">
+          @for (t of roomTypes(); track t.id) { <option [value]="t.id">{{ t.name }}</option> }
+        </select>
+      </label>
+      <label class="ss-field grow"><span>Room numbers (e.g. 101-110, 201)</span><input class="ss-input" formControlName="names" /></label>
+      <label class="ss-field"><span>Floor</span><input class="ss-input" formControlName="floor" /></label>
+      <button type="submit" class="ss-btn" [disabled]="busy()">Add rooms</button>
+    </form>
+  }
+  @for (t of roomTypes(); track t.id) {
+    @if (roomsOf(t.id).length) {
+      <h3>{{ t.name }}</h3>
+      <ul class="rooms">
+        @for (r of roomsOf(t.id); track r.id) {
+          <li [class.oos]="r.status === 'OUT_OF_SERVICE'">
+            <span class="name">{{ r.name }}</span>
+            @if (r.floor) { <small class="ss-muted">Floor {{ r.floor }}</small> }
+            <ss-status-pill [tone]="r.status === 'AVAILABLE' ? 'success' : 'warning'">{{ r.status === 'AVAILABLE' ? 'In service' : 'Out of service' }}</ss-status-pill>
+            <span class="room-actions">
+              @if (canSetStatus()) {
+                <button type="button" class="ss-link-btn" (click)="toggleStatus(r)">{{ r.status === 'AVAILABLE' ? 'Mark out of service' : 'Back in service' }}</button>
+              }
+              @if (canWrite()) { · <button type="button" class="ss-link-btn danger" (click)="deleteRoom(r)">Delete</button> }
+            </span>
+          </li>
+        }
+      </ul>
+    }
+  } @empty {
+    <p class="ss-muted">Add a room type first.</p>
+  }
+</section>

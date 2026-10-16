@@ -1,0 +1,156 @@
+<header class="ss-page-head">
+  <div>
+    <h1>Profile &amp; security</h1>
+    <p class="ss-muted">Manage how you sign in to StaySync.</p>
+  </div>
+</header>
+
+@if (message(); as m) {
+  <p class="ss-alert" [class.ss-alert--success]="m.tone === 'success'" [class.ss-alert--error]="m.tone === 'error'" role="status">{{ m.text }}</p>
+}
+
+<div class="grid">
+  <section class="ss-card" aria-labelledby="profile-title">
+    <h2 class="ss-card__title" id="profile-title">Profile</h2>
+    @if (auth.user(); as u) {
+      <dl class="facts">
+        <dt>Name</dt><dd>{{ u.displayName }}</dd>
+        <dt>Email</dt><dd>{{ u.email }}</dd>
+        @if (auth.currentOrg(); as o) {
+          <dt>Organization</dt><dd>{{ o.organizationName }}</dd>
+        }
+      </dl>
+    }
+    <form class="email-form" (ngSubmit)="changeEmail()" novalidate>
+      <label class="ss-field"><span>Change email address</span>
+        <input class="ss-input" type="email" [formControl]="newEmail" placeholder="new@example.com" autocomplete="email" />
+        <small class="ss-muted">We send a confirmation link to the new address. You will be signed out everywhere after confirming.</small>
+      </label>
+      <button class="ss-btn ss-btn--ghost" type="submit" [disabled]="busy()">Send confirmation link</button>
+    </form>
+  </section>
+
+  @if (isOwner() && org(); as o) {
+    <section class="ss-card" aria-labelledby="org-title">
+      <h2 class="ss-card__title" id="org-title">Organization</h2>
+      <form (ngSubmit)="saveOrg()" novalidate>
+        <label class="ss-field"><span>Name</span><input class="ss-input" [formControl]="orgName" /></label>
+        <label class="ss-field"><span>Default currency</span><input class="ss-input" [formControl]="orgCurrency" maxlength="3" /></label>
+        <button class="ss-btn" type="submit" [disabled]="busy()">Save</button>
+      </form>
+      <div class="policy">
+        <p><strong>Require two-factor authentication for all members</strong><br />
+          <span class="ss-muted">Members without 2FA must set it up at their next sign-in.</span></p>
+        @if (o.twoFactorRequired) {
+          <ss-status-pill tone="success">Required</ss-status-pill>
+          <button type="button" class="ss-link-btn" (click)="setOrgTwoFactor(false)">Make optional</button>
+        } @else {
+          <button type="button" class="ss-btn ss-btn--ghost" (click)="setOrgTwoFactor(true)" [disabled]="busy()">Require 2FA</button>
+        }
+      </div>
+    </section>
+  }
+
+  <section class="ss-card" aria-labelledby="pw-title">
+    <h2 class="ss-card__title" id="pw-title">Password</h2>
+    <form (ngSubmit)="changePassword()" novalidate>
+      <label class="ss-field"><span>New password</span>
+        <input class="ss-input" type="password" [formControl]="newPassword" autocomplete="new-password" />
+        <small class="ss-muted">At least 12 characters. Changing it signs out your other sessions.</small>
+      </label>
+      <button class="ss-btn" type="submit" [disabled]="busy()">Change password</button>
+    </form>
+  </section>
+
+  <section class="ss-card" aria-labelledby="mfa-title">
+    <h2 class="ss-card__title" id="mfa-title">
+      Two-factor authentication
+      @if (twoFactor(); as t) {
+        <ss-status-pill [tone]="t.enabled ? 'success' : 'warning'">{{ t.enabled ? 'On' : 'Off' }}</ss-status-pill>
+      }
+    </h2>
+    @if (twoFactor(); as t) {
+      @if (t.enabled) {
+        <p class="ss-muted">Sign-in requires a code from your authenticator app. {{ t.recoveryCodesRemaining }} recovery code(s) left.</p>
+        @if (t.recoveryCodesRemaining <= 3) {
+          <p class="ss-alert ss-alert--warning">You are running low on recovery codes. Create new ones.</p>
+        }
+        <div class="row">
+          <button type="button" class="ss-btn ss-btn--ghost" (click)="regenerate()" [disabled]="busy()">New recovery codes</button>
+          @if (!t.required) {
+            <button type="button" class="ss-btn ss-btn--ghost danger" (click)="disable()" [disabled]="busy()">Turn off</button>
+          } @else {
+            <span class="ss-muted small">Required for your account.</span>
+          }
+        </div>
+        @if (newCodes(); as codes) {
+          <p class="ss-muted small">Save these now. They will not be shown again.</p>
+          <ul class="ss-codes">@for (c of codes; track c) { <li>{{ c }}</li> }</ul>
+        }
+      } @else {
+        <p class="ss-muted">Add a second step at sign-in with an authenticator app. Strongly recommended for owners.</p>
+        <a class="ss-btn" routerLink="/security/two-factor-setup">Turn on</a>
+      }
+    }
+  </section>
+
+  @if (auth.hasOrgPermission('org.security.manage')) {
+    <section class="ss-card wide" aria-labelledby="support-title">
+      <h2 class="ss-card__title" id="support-title">Support access</h2>
+      <p class="ss-muted">StaySync support cannot see your data unless you approve a request here. Access is read-only, time-limited, can be revoked at any time, and every view is recorded in your audit log.</p>
+      <div class="ss-table-wrap">
+        <table class="ss-table">
+          <thead><tr><th>Requested</th><th>Reason</th><th>Duration</th><th>Status</th><th><span class="ss-visually-hidden">Actions</span></th></tr></thead>
+          <tbody>
+            @for (r of supportRequests(); track r.id) {
+              <tr>
+                <td>{{ r.createdAt | date: 'medium' }}</td>
+                <td>{{ r.reason }}</td>
+                <td>{{ r.durationMinutes }} min</td>
+                <td>
+                  @if (r.active) { <ss-status-pill tone="warning">Active until {{ r.expiresAt | date: 'shortTime' }}</ss-status-pill> }
+                  @else { <ss-status-pill [tone]="r.status === 'PENDING' ? 'info' : 'neutral'">{{ r.status === 'APPROVED' ? 'Expired' : r.status }}</ss-status-pill> }
+                </td>
+                <td class="right">
+                  @if (r.status === 'PENDING') {
+                    <button type="button" class="ss-link-btn" (click)="decide(r, 'approve')">Approve</button> ·
+                    <button type="button" class="ss-link-btn danger" (click)="decide(r, 'deny')">Deny</button>
+                  } @else if (r.active) {
+                    <button type="button" class="ss-link-btn danger" (click)="decide(r, 'revoke')">Revoke now</button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="5" class="ss-muted">No support access requests.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  }
+
+  <section class="ss-card wide" aria-labelledby="sessions-title">
+    <h2 class="ss-card__title" id="sessions-title">
+      Active sessions
+      @if (sessions().length > 1) {
+        <button type="button" class="ss-btn ss-btn--ghost small-btn" (click)="revokeOthers()">Sign out other sessions</button>
+      }
+    </h2>
+    <div class="ss-table-wrap">
+      <table class="ss-table">
+        <thead><tr><th>Device</th><th>IP address</th><th>Signed in</th><th>Last active</th><th><span class="ss-visually-hidden">Actions</span></th></tr></thead>
+        <tbody>
+          @for (s of sessions(); track s.id) {
+            <tr>
+              <td>{{ device(s.userAgent) }} @if (s.current) { <ss-status-pill tone="info">This device</ss-status-pill> }</td>
+              <td>{{ s.ipAddress ?? '—' }}</td>
+              <td>{{ s.createdAt | date: 'medium' }}</td>
+              <td>{{ s.lastSeenAt | date: 'medium' }}</td>
+              <td class="right"><button type="button" class="ss-link-btn" (click)="revoke(s)">{{ s.current ? 'Sign out' : 'Revoke' }}</button></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

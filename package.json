@@ -1,0 +1,35 @@
+{
+  "name": "staysync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "StaySync - multi-tenant property & channel management SaaS",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "engines": {
+    "node": "^22.22.3 || ^24.15.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @staysync/api\" \"npm run start -w @staysync/web\"",
+    "dev:api": "npm run dev -w @staysync/api",
+    "dev:web": "npm run start -w @staysync/web",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "npm run db:migrate -w @staysync/api",
+    "db:deploy": "npm run db:deploy -w @staysync/api",
+    "db:seed": "npm run db:seed -w @staysync/api",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces",
+    "build": "npm run build --workspaces",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "admin:create": "npm run admin:create -w @staysync/api --",
+    "zodomus:probe": "npm run zodomus:probe -w @staysync/api",
+    "zodomus:check": "npm run zodomus:check -w @staysync/api --"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}

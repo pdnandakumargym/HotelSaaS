@@ -1,0 +1,346 @@
+/* StaySync design tokens — derived from the supplied dashboard mockups. */
+:root {
+  --ss-navy-900: #0a1730;
+  --ss-navy-800: #0f2142;
+  --ss-navy-700: #18305a;
+  --ss-navy-text: #b7c3da;
+  --ss-blue-600: #1f63e6;
+  --ss-blue-500: #2f74f5;
+  --ss-blue-50: #eaf1fe;
+  --ss-bg: #f4f6fb;
+  --ss-surface: #ffffff;
+  --ss-border: #e3e8f1;
+  --ss-text: #142038;
+  --ss-text-muted: #61708b;
+  --ss-text-subtle: #8b97ad;
+  --ss-green-600: #15803d;
+  --ss-green-50: #e8f6ee;
+  --ss-amber-600: #b45309;
+  --ss-amber-50: #fdf3e2;
+  --ss-red-600: #c42b2b;
+  --ss-red-50: #fdecec;
+  --ss-gray-600: #55627a;
+  --ss-gray-50: #eef1f6;
+  --ss-yellow-400: #f7c948;
+  --ss-radius-sm: 6px;
+  --ss-radius: 10px;
+  --ss-radius-lg: 14px;
+  --ss-shadow: 0 1px 2px rgba(16, 32, 64, 0.06), 0 1px 3px rgba(16, 32, 64, 0.04);
+  --ss-font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --ss-sidebar-w: 248px;
+  --ss-topbar-h: 60px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--ss-font);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ss-text);
+  background: var(--ss-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+a {
+  color: var(--ss-blue-600);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ss-blue-500);
+  outline-offset: 2px;
+}
+
+.ss-card {
+  background: var(--ss-surface);
+  border: 1px solid var(--ss-border);
+  border-radius: var(--ss-radius-lg);
+  box-shadow: var(--ss-shadow);
+  padding: 18px 20px;
+}
+
+.ss-card__title {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ss-muted {
+  color: var(--ss-text-muted);
+}
+
+.ss-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: var(--ss-radius-sm);
+  border: 1px solid transparent;
+  background: var(--ss-blue-600);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+
+  &:hover:not(:disabled) {
+    background: var(--ss-blue-500);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  &--ghost {
+    background: var(--ss-surface);
+    color: var(--ss-text);
+    border-color: var(--ss-border);
+
+    &:hover:not(:disabled) {
+      background: var(--ss-gray-50);
+    }
+  }
+}
+
+.ss-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ---------- Forms & auth pages (Milestone 2) ---------- */
+.ss-auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background:
+    radial-gradient(circle at 10% 90%, rgba(47, 116, 245, 0.08), transparent 50%),
+    var(--ss-bg);
+}
+
+.ss-auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--ss-surface);
+  border: 1px solid var(--ss-border);
+  border-radius: var(--ss-radius-lg);
+  box-shadow: var(--ss-shadow);
+  padding: 32px;
+
+  h1 {
+    font-size: 22px;
+    margin-bottom: 4px;
+  }
+
+  > .ss-muted {
+    margin: 0 0 20px;
+  }
+}
+
+.ss-auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--ss-navy-800);
+  margin-bottom: 18px;
+}
+
+.ss-field {
+  display: block;
+  margin-bottom: 14px;
+
+  > span {
+    display: block;
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+}
+
+.ss-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--ss-border);
+  border-radius: var(--ss-radius-sm);
+  background: #fff;
+  color: var(--ss-text);
+
+  &[aria-invalid='true'] {
+    border-color: var(--ss-red-600);
+  }
+
+  &--code {
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: 20px;
+    letter-spacing: 6px;
+    text-align: center;
+  }
+}
+
+.ss-field-error {
+  display: block;
+  font-size: 12px;
+  color: var(--ss-red-600);
+  margin-top: 4px;
+}
+
+.ss-alert {
+  padding: 10px 12px;
+  border-radius: var(--ss-radius-sm);
+  font-size: 13px;
+  margin: 12px 0;
+
+  &--error {
+    background: var(--ss-red-50);
+    color: var(--ss-red-600);
+  }
+
+  &--success {
+    background: var(--ss-green-50);
+    color: var(--ss-green-600);
+  }
+
+  &--info {
+    background: var(--ss-blue-50);
+    color: var(--ss-blue-600);
+  }
+
+  &--warning {
+    background: var(--ss-amber-50);
+    color: var(--ss-amber-600);
+  }
+}
+
+.ss-btn--block {
+  width: 100%;
+}
+
+.ss-btn--danger {
+  background: var(--ss-red-600);
+
+  &:hover:not(:disabled) {
+    background: #a82222;
+  }
+}
+
+.ss-link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--ss-blue-600);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.ss-auth-foot {
+  margin: 18px 0 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ss-text-muted);
+}
+
+.ss-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+
+  h1 {
+    font-size: 22px;
+  }
+
+  p {
+    margin: 4px 0 0;
+  }
+}
+
+.ss-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--ss-text-muted);
+    font-size: 12.5px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ss-border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 10px;
+    border-bottom: 1px solid var(--ss-border);
+    vertical-align: middle;
+  }
+
+  tr:last-child td {
+    border-bottom: 0;
+  }
+}
+
+.ss-table-wrap {
+  overflow-x: auto;
+}
+
+.ss-codes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px 16px;
+  padding: 14px;
+  background: var(--ss-gray-50);
+  border-radius: var(--ss-radius-sm);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 15px;
+  list-style: none;
+  margin: 12px 0;
+}

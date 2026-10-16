@@ -1,0 +1,103 @@
+@if (message(); as m) {
+  <p class="ss-alert" [class.ss-alert--success]="m.tone === 'success'" [class.ss-alert--error]="m.tone === 'error'" role="status">{{ m.text }}</p>
+}
+@if (org(); as o) {
+  <header class="ss-page-head">
+    <div>
+      <p class="crumb"><a routerLink="/admin/customers">Customers</a> /</p>
+      <h1>{{ o.name }} <ss-status-pill [tone]="o.status === 'ACTIVE' ? 'success' : 'danger'">{{ o.status }}</ss-status-pill></h1>
+      <p class="ss-muted">{{ o.slug }} · joined {{ o.createdAt | date: 'mediumDate' }}</p>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="ss-card">
+      <h2 class="ss-card__title">Subscription</h2>
+      <dl class="facts">
+        <dt>Plan</dt><dd>{{ o.subscription.plan.name }} ({{ o.subscription.status }})</dd>
+        @if (o.subscription.trialEndsAt) { <dt>Trial ends</dt><dd>{{ o.subscription.trialEndsAt | date: 'mediumDate' }}</dd> }
+        <dt>Properties</dt><dd>{{ o.usage.properties }} / {{ o.subscription.plan.maxProperties }}</dd>
+        <dt>Users</dt><dd>{{ o.usage.users }} / {{ o.subscription.plan.maxUsers }}</dd>
+        <dt>2FA policy</dt><dd>{{ o.twoFactorRequired ? 'Required for all members' : 'Optional' }}</dd>
+      </dl>
+      @if (canManageBilling()) {
+        <form class="row" (ngSubmit)="changePlan()">
+          <label class="ss-field"><span>Change plan</span>
+            <select class="ss-input" [formControl]="plan">
+              @for (p of plans(); track p.code) { <option [value]="p.code">{{ p.name }}</option> }
+            </select>
+          </label>
+          <button class="ss-btn ss-btn--ghost" type="submit">Apply</button>
+        </form>
+      }
+    </section>
+
+    <section class="ss-card">
+      <h2 class="ss-card__title">Account status</h2>
+      @if (canManageOrg()) {
+        <form (ngSubmit)="setStatus(o.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE')">
+          <label class="ss-field"><span>Reason (recorded in the audit log)</span><input class="ss-input" [formControl]="reason" /></label>
+          @if (o.status === 'ACTIVE') {
+            <button class="ss-btn danger" type="submit">Suspend organization</button>
+          } @else {
+            <button class="ss-btn" type="submit">Reactivate organization</button>
+          }
+        </form>
+      } @else {
+        <p class="ss-muted">Only super admins can suspend or reactivate organizations.</p>
+      }
+      @if (canRequestSupport()) {
+        <hr />
+        <form (ngSubmit)="requestSupport()">
+          <label class="ss-field"><span>Request support access (owner must approve)</span><input class="ss-input" [formControl]="supportReason" placeholder="Why you need to look at this account" /></label>
+          <div class="row">
+            <label class="ss-field"><span>Duration</span>
+              <select class="ss-input" [formControl]="supportMinutes">
+                <option [value]="30">30 minutes</option><option [value]="60">1 hour</option><option [value]="120">2 hours</option><option [value]="240">4 hours</option>
+              </select>
+            </label>
+            <button class="ss-btn ss-btn--ghost" type="submit">Send request</button>
+          </div>
+        </form>
+      }
+    </section>
+
+    <section class="ss-card wide">
+      <h2 class="ss-card__title">Members</h2>
+      <div class="ss-table-wrap">
+        <table class="ss-table">
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>2FA</th><th>Last sign-in</th></tr></thead>
+          <tbody>
+            @for (m of o.members; track m.userId) {
+              <tr><td>{{ m.displayName }}</td><td>{{ m.email }}</td><td>{{ role(m.role) }}</td>
+                <td><ss-status-pill [tone]="m.twoFactorEnabled ? 'success' : 'neutral'">{{ m.twoFactorEnabled ? 'On' : 'Off' }}</ss-status-pill></td>
+                <td>{{ m.lastLoginAt ? (m.lastLoginAt | date: 'medium') : 'Never' }}</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="ss-card wide">
+      <h2 class="ss-card__title">Properties</h2>
+      <div class="ss-table-wrap">
+        <table class="ss-table">
+          <thead><tr><th>Name</th><th>Type</th><th>Location</th><th>Room types</th><th>Rooms</th><th>Status</th></tr></thead>
+          <tbody>
+            @for (p of o.properties; track p.id) {
+              <tr><td>{{ p.name }}</td><td>{{ p.propertyType }}</td><td>{{ ([p.city, p.countryCode] | joinPresent: ', ') }}</td><td>{{ p.roomTypeCount }}</td><td>{{ p.roomCount }}</td><td>{{ p.status }}</td></tr>
+            } @empty { <tr><td colspan="6" class="ss-muted">No properties.</td></tr> }
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="ss-card wide">
+      <h2 class="ss-card__title">Recent activity</h2>
+      <ul class="events">
+        @for (e of o.recentEvents; track e.id) { <li><code>{{ e.action }}</code> · {{ e.actorType }} · {{ e.createdAt | date: 'medium' }}</li> }
+        @empty { <li class="ss-muted">No events.</li> }
+      </ul>
+    </section>
+  </div>
+}

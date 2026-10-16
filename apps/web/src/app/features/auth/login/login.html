@@ -1,0 +1,49 @@
+<div class="page">
+  <section class="hero" aria-hidden="true">
+    <div class="hero__brand"><ss-icon name="logo" [size]="22" /> StaySync</div>
+    <div class="hero__copy">
+      <h2>Manage your property once.<br />Sell on supported channels.</h2>
+      <p>Rooms, inventory, rates and bookings in one place, synchronized through approved channel-manager integrations.</p>
+      <ul>
+        <li><ss-icon name="check" [size]="16" /> One master calendar</li>
+        <li><ss-icon name="check" [size]="16" /> Per-channel sync status</li>
+        <li><ss-icon name="check" [size]="16" /> Discrepancy alerts</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel">
+    <form class="card" [formGroup]="form" (ngSubmit)="submit()" novalidate aria-labelledby="login-title">
+      <h1 id="login-title">Welcome back</h1>
+      <p class="ss-muted">Sign in to your StaySync account</p>
+
+      <label for="email">Email address</label>
+      <input id="email" type="email" formControlName="email" autocomplete="username" inputmode="email"
+        [attr.aria-invalid]="showError('email')" aria-describedby="email-err" />
+      <p class="field-error" id="email-err" aria-live="polite">
+        @if (showError('email')) { Enter a valid email address. }
+      </p>
+
+      <div class="row">
+        <label for="password">Password</label>
+        <a routerLink="/forgot-password" class="small">Forgot password?</a>
+      </div>
+      <input id="password" type="password" formControlName="password" autocomplete="current-password"
+        [attr.aria-invalid]="showError('password')" aria-describedby="password-err" />
+      <p class="field-error" id="password-err" aria-live="polite">
+        @if (showError('password')) { Enter your password. }
+      </p>
+
+      <button type="submit" class="ss-btn submit" [disabled]="busy()">{{ busy() ? 'Signing in…' : 'Sign in' }}</button>
+
+      @if (error(); as msg) {
+        <p class="notice" role="alert">{{ msg }}</p>
+      }
+      @if (unverified()) {
+        <p class="foot"><button type="button" class="ss-link-btn" (click)="resend()">Send a new verification link</button></p>
+      }
+
+      <p class="foot ss-muted">New to StaySync? <a routerLink="/register">Create an account</a></p>
+    </form>
+  </section>
+</div>

@@ -1,0 +1,63 @@
+<header class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="ss-muted">Welcome{{ firstName() ? ', ' + firstName() : '' }}. Your properties, channels and onboarding at a glance.</p>
+  </div>
+  <ss-status-pill tone="info">No live booking data yet</ss-status-pill>
+</header>
+
+<section class="kpis" aria-label="Key metrics">
+  @for (k of kpis; track k.label) {
+    <ss-kpi-tile [label]="k.label" [hint]="k.hint" />
+  }
+</section>
+
+<div class="grid">
+  <section class="ss-card" aria-labelledby="channels-title">
+    <h2 class="ss-card__title" id="channels-title">
+      Channel sync status
+      <a routerLink="../channels" class="link">View channels</a>
+    </h2>
+    <div class="empty">
+      <ss-icon name="plug" [size]="26" />
+      <p><strong>No channels connected</strong></p>
+      <p class="ss-muted">
+        StaySync connects to booking channels through the Zodomus channel manager. The sandbox connection is built in
+        Milestone 4. Live OTA connections need Zodomus certification and OTA approval.
+      </p>
+    </div>
+  </section>
+
+  <section class="ss-card" aria-labelledby="onboarding-title">
+    <h2 class="ss-card__title" id="onboarding-title">
+      Getting started
+      <span class="ss-muted small">{{ doneCount() }} of {{ onboarding().length }}</span>
+    </h2>
+    <div class="progress" role="progressbar" aria-valuemin="0" [attr.aria-valuemax]="onboarding().length" [attr.aria-valuenow]="doneCount()" aria-label="Onboarding progress">
+      <span [style.width.%]="(doneCount() / onboarding().length) * 100"></span>
+    </div>
+    <ol class="steps">
+      @for (step of onboarding(); track step.label) {
+        <li [class.done]="step.done">
+          <ss-icon [name]="step.done ? 'check' : 'circle'" [size]="16" />
+          @if (!step.done && step.link) {
+            <a class="step-label" [routerLink]="step.link">{{ step.label }}</a>
+          } @else {
+            <span class="step-label">{{ step.label }}</span>
+          }
+          @if (!step.done) { <span class="soon">M{{ step.milestone }}</span> }
+        </li>
+      }
+    </ol>
+  </section>
+
+  <section class="ss-card" aria-labelledby="attention-title">
+    <h2 class="ss-card__title" id="attention-title">Attention required</h2>
+    <div class="empty">
+      <ss-icon name="check" [size]="26" />
+      <p class="ss-muted">Nothing to review. Rate, inventory and mapping discrepancies will appear here once channels are connected.</p>
+    </div>
+  </section>
+
+  <ss-system-status />
+</div>

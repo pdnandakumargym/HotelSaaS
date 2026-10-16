@@ -1,0 +1,99 @@
+<header class="ss-page-head">
+  <div>
+    <h1>{{ id() ? 'Edit property' : 'Add property' }}</h1>
+    <p class="ss-muted">Basic details guests and booking channels will see. You can change them later.</p>
+  </div>
+</header>
+
+<form [formGroup]="form" (ngSubmit)="submit()" novalidate>
+  <section class="ss-card">
+    <h2 class="ss-card__title">Basics</h2>
+    <div class="grid">
+      <label class="ss-field full"><span>Property name</span>
+        <input class="ss-input" formControlName="name" [attr.aria-invalid]="form.controls.name.invalid && form.controls.name.touched" />
+        @if (err('name'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+      <label class="ss-field"><span>Type</span>
+        <select class="ss-input" formControlName="propertyType">
+          @for (t of types; track t.value) { <option [value]="t.value">{{ t.label }}</option> }
+        </select>
+      </label>
+      <label class="ss-field"><span>Status</span>
+        <select class="ss-input" formControlName="status">
+          <option value="DRAFT">Draft (being set up)</option>
+          <option value="ACTIVE">Active</option>
+          <option value="INACTIVE">Inactive</option>
+        </select>
+      </label>
+      <label class="ss-field"><span>Star rating (optional)</span>
+        <select class="ss-input" formControlName="starRating">
+          <option value="">Not rated</option>
+          @for (n of [1, 2, 3, 4, 5]; track n) { <option [value]="n">{{ n }} star</option> }
+        </select>
+      </label>
+      <label class="ss-field"><span>Description</span>
+        <textarea class="ss-input" formControlName="description" maxlength="4000"></textarea>
+      </label>
+    </div>
+  </section>
+
+  <section class="ss-card">
+    <h2 class="ss-card__title">Location &amp; contact</h2>
+    <div class="grid">
+      <label class="ss-field full"><span>Address line 1</span><input class="ss-input" formControlName="addressLine1" autocomplete="address-line1" /></label>
+      <label class="ss-field full"><span>Address line 2</span><input class="ss-input" formControlName="addressLine2" autocomplete="address-line2" /></label>
+      <label class="ss-field"><span>City</span><input class="ss-input" formControlName="city" autocomplete="address-level2" /></label>
+      <label class="ss-field"><span>State / region</span><input class="ss-input" formControlName="state" autocomplete="address-level1" /></label>
+      <label class="ss-field"><span>Postal code</span><input class="ss-input" formControlName="postalCode" autocomplete="postal-code" /></label>
+      <label class="ss-field"><span>Country (ISO code, e.g. IN)</span>
+        <input class="ss-input" formControlName="countryCode" maxlength="2" />
+        @if (err('countryCode'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+      <label class="ss-field"><span>Contact email</span>
+        <input class="ss-input" type="email" formControlName="contactEmail" />
+        @if (err('contactEmail'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+      <label class="ss-field"><span>Contact phone</span>
+        <input class="ss-input" type="tel" formControlName="contactPhone" />
+        @if (err('contactPhone'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+    </div>
+  </section>
+
+  <section class="ss-card">
+    <h2 class="ss-card__title">Time zone, currency &amp; stay times</h2>
+    <p class="ss-muted">Inventory and rates are managed per calendar day in the property's time zone.</p>
+    <div class="grid">
+      <label class="ss-field"><span>Time zone</span>
+        <input class="ss-input" formControlName="timezone" list="tz-list" />
+        <datalist id="tz-list">@for (tz of timezones; track tz) { <option [value]="tz"></option> }</datalist>
+        @if (err('timezone'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+      <label class="ss-field"><span>Currency (ISO code, e.g. INR)</span>
+        <input class="ss-input" formControlName="currency" maxlength="3" />
+        @if (err('currency'); as e) { <small class="ss-field-error">{{ e }}</small> }
+      </label>
+      <label class="ss-field"><span>Check-in from</span><input class="ss-input" type="time" formControlName="checkInTime" /></label>
+      <label class="ss-field"><span>Check-out by</span><input class="ss-input" type="time" formControlName="checkOutTime" /></label>
+    </div>
+  </section>
+
+  <section class="ss-card">
+    <h2 class="ss-card__title">Policies</h2>
+    <div class="grid">
+      <label class="ss-field"><span>Cancellation policy</span><textarea class="ss-input" formControlName="cancellationPolicy" maxlength="4000"></textarea></label>
+      <label class="ss-field"><span>House rules</span><textarea class="ss-input" formControlName="houseRules" maxlength="4000"></textarea></label>
+    </div>
+  </section>
+
+  <section class="ss-card">
+    <h2 class="ss-card__title">Property amenities</h2>
+    <ss-amenity-picker [amenities]="amenities()" scope="property" [(selected)]="selectedAmenities" />
+  </section>
+
+  @if (error(); as e) { <p class="ss-alert ss-alert--error" role="alert">{{ e }}</p> }
+  <div class="actions">
+    <a class="ss-btn ss-btn--ghost" [routerLink]="id() ? ['/app/properties', id()] : ['/app/properties']">Cancel</a>
+    <button class="ss-btn" type="submit" [disabled]="busy()">{{ busy() ? 'Saving…' : id() ? 'Save changes' : 'Create property' }}</button>
+  </div>
+</form>

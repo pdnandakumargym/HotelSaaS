@@ -1,0 +1,714 @@
+// StaySync database schema.
+// Milestone 1: tenancy foundation (organizations, properties) and append-only audit log.
+// Milestone 2: users, memberships, sessions, 2FA, one-time tokens; row-level security (see migrations).
+// Milestone 3: property details, room types and units, invitations, plans and subscriptions,
+//              owner-approved support access, email change.
+//
+// Conventions
+// - UUIDv7 primary keys (time-ordered, index friendly).
+// - All timestamps are timestamptz stored in UTC; properties carry an explicit IANA time zone.
+// - Every tenant-owned table has organization_id and a composite (organization_id, id) unique key
+//   so child tables can use tenant-safe composite foreign keys.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@map("organization_status")
+}
+
+enum PropertyType {
+  HOTEL
+  HOMESTAY
+  VILLA
+  BUNGALOW
+  RESORT
+  APARTMENT
+  OTHER
+
+  @@map("property_type")
+}
+
+enum PropertyStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+
+  @@map("property_status")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+/// Platform-level role. NULL for ordinary customer users.
+enum PlatformRole {
+  PLATFORM_SUPER_ADMIN
+  PLATFORM_SUPPORT
+
+  @@map("platform_role")
+}
+
+/// Role inside one organization.
+enum OrganizationRole {
+  ORG_OWNER
+  PROPERTY_MANAGER
+  PROPERTY_STAFF
+  READ_ONLY
+
+  @@map("organization_role")
+}
+
+enum OneTimeTokenPurpose {
+  VERIFY_EMAIL
+  PASSWORD_RESET
+  EMAIL_CHANGE
+
+  @@map("one_time_token_purpose")
+}
+
+enum RoomTypeStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("room_type_status")
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OUT_OF_SERVICE
+
+  @@map("room_status")
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+
+  @@map("subscription_status")
+}
+
+enum SupportAccessStatus {
+  PENDING
+  APPROVED
+  DENIED
+  REVOKED
+
+  @@map("support_access_status")
+}
+
+model Organization {
+  id              String             @id @default(uuid(7)) @db.Uuid
+  name            String             @db.VarChar(160)
+  slug            String             @unique @db.VarChar(80)
+  status          OrganizationStatus @default(ACTIVE)
+  defaultCurrency String             @default("INR") @map("default_currency") @db.Char(3)
+  /// Organization policy: every member must use two-factor authentication.
+  twoFactorRequired Boolean          @default(false) @map("two_factor_required")
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  properties     Property[]
+  auditEvents    AuditEvent[]
+  memberships    OrganizationMembership[]
+  roomTypes      RoomType[]
+  rooms          Room[]
+  invitations    Invitation[]
+  subscription   Subscription?
+  supportRequests SupportAccessRequest[]
+  ratePlans      RatePlan[]
+  channelConnections ChannelConnection[]
+
+  @@map("organizations")
+}
+
+model User {
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  /// Stored lower-cased and trimmed.
+  email               String        @unique @db.VarChar(254)
+  displayName         String        @map("display_name") @db.VarChar(120)
+  passwordHash        String        @map("password_hash") @db.VarChar(255)
+  status              UserStatus    @default(ACTIVE)
+  platformRole        PlatformRole? @map("platform_role")
+  emailVerifiedAt     DateTime?     @map("email_verified_at") @db.Timestamptz(3)
+  passwordChangedAt   DateTime      @default(now()) @map("password_changed_at") @db.Timestamptz(3)
+  /// AES-256-GCM encrypted TOTP secret (never stored in plaintext).
+  totpSecretEnc       String?       @map("totp_secret_enc") @db.VarChar(255)
+  /// Pending secret during enrollment, encrypted.
+  totpPendingSecretEnc String?      @map("totp_pending_secret_enc") @db.VarChar(255)
+  totpEnabledAt       DateTime?     @map("totp_enabled_at") @db.Timestamptz(3)
+  /// Last accepted TOTP time step, for replay protection.
+  totpLastUsedStep    BigInt?       @map("totp_last_used_step")
+  failedLoginCount    Int           @default(0) @map("failed_login_count")
+  lastFailedLoginAt   DateTime?     @map("last_failed_login_at") @db.Timestamptz(3)
+  lockedUntil         DateTime?     @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime?     @map("last_login_at") @db.Timestamptz(3)
+  /// New address waiting for confirmation (email change).
+  pendingEmail        String?       @map("pending_email") @db.VarChar(254)
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  memberships   OrganizationMembership[]
+  sessions      Session[]
+  recoveryCodes RecoveryCode[]
+  tokens        OneTimeToken[]
+
+  @@map("users")
+}
+
+model OrganizationMembership {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  role           OrganizationRole
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_memberships")
+}
+
+model Session {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  /// SHA-256 of the random session token. The token itself only lives in the HttpOnly cookie.
+  tokenHash     String    @unique @map("token_hash") @db.Char(64)
+  /// SHA-256 of the CSRF token bound to this session.
+  csrfTokenHash String    @map("csrf_token_hash") @db.Char(64)
+  /// NULL while a second factor is still required.
+  mfaVerifiedAt DateTime? @map("mfa_verified_at") @db.Timestamptz(3)
+  /// Count of failed second-factor attempts on this session.
+  mfaFailedAttempts Int   @default(0) @map("mfa_failed_attempts")
+  stepUpAt      DateTime? @map("step_up_at") @db.Timestamptz(3)
+  ipAddress     String?   @map("ip_address") @db.Inet
+  userAgent     String?   @map("user_agent") @db.VarChar(400)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedReason String?   @map("revoked_reason") @db.VarChar(40)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  /// HMAC-SHA256 of the code with a key derived from DATA_ENCRYPTION_KEY.
+  codeHash  String    @map("code_hash") @db.Char(64)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+  @@map("recovery_codes")
+}
+
+/// Single-use, expiring tokens for email verification and password reset. Only hashes are stored.
+model OneTimeToken {
+  id        String              @id @default(uuid(7)) @db.Uuid
+  userId    String              @map("user_id") @db.Uuid
+  purpose   OneTimeTokenPurpose
+  tokenHash String              @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime            @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime?           @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("one_time_tokens")
+}
+
+model Property {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  name           String         @db.VarChar(160)
+  propertyType   PropertyType   @map("property_type")
+  status         PropertyStatus @default(DRAFT)
+  /// IANA time zone, e.g. Asia/Kolkata. Inventory and rate dates are interpreted in this zone.
+  timezone       String         @db.VarChar(64)
+  currency       String         @db.Char(3)
+  countryCode    String         @map("country_code") @db.Char(2)
+  city           String?        @db.VarChar(120)
+  addressLine1   String?        @map("address_line1") @db.VarChar(200)
+  addressLine2   String?        @map("address_line2") @db.VarChar(200)
+  postalCode     String?        @map("postal_code") @db.VarChar(20)
+  /// Local time, HH:MM (24h)
+  checkInTime    String?        @map("check_in_time") @db.VarChar(5)
+  checkOutTime   String?        @map("check_out_time") @db.VarChar(5)
+  description    String?        @db.VarChar(4000)
+  starRating     Int?           @map("star_rating") @db.SmallInt
+  contactEmail   String?        @map("contact_email") @db.VarChar(254)
+  contactPhone   String?        @map("contact_phone") @db.VarChar(40)
+  state          String?        @db.VarChar(120)
+  latitude       Decimal?       @db.Decimal(9, 6)
+  longitude      Decimal?       @db.Decimal(9, 6)
+  cancellationPolicy String?    @map("cancellation_policy") @db.VarChar(4000)
+  houseRules     String?        @map("house_rules") @db.VarChar(4000)
+  /// Amenity codes from the catalog in modules/properties/amenities.ts
+  amenities      String[]       @default([])
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  roomTypes    RoomType[]
+  rooms        Room[]
+  ratePlans    RatePlan[]
+  channelConnections ChannelConnection[]
+
+  @@unique([organizationId, id])
+  @@unique([organizationId, name])
+  @@index([organizationId, status])
+  @@map("properties")
+}
+
+/// Append-only. UPDATE and DELETE are blocked by a database trigger.
+model AuditEvent {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  actorType      String   @default("system") @map("actor_type") @db.VarChar(20)
+  action         String   @db.VarChar(100)
+  entityType     String?  @map("entity_type") @db.VarChar(60)
+  entityId       String?  @map("entity_id") @db.VarChar(64)
+  requestId      String?  @map("request_id") @db.VarChar(128)
+  ipAddress      String?  @map("ip_address") @db.Inet
+  userAgent      String?  @map("user_agent") @db.VarChar(400)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_events")
+}
+
+/// A sellable category of rooms/units within a property (e.g. "Deluxe Room").
+model RoomType {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  propertyId     String         @map("property_id") @db.Uuid
+  name           String         @db.VarChar(120)
+  /// Short internal code, unique per property (used later for channel mapping).
+  code           String         @db.VarChar(20)
+  description    String?        @db.VarChar(2000)
+  baseOccupancy  Int            @default(2) @map("base_occupancy") @db.SmallInt
+  maxAdults      Int            @default(2) @map("max_adults") @db.SmallInt
+  maxChildren    Int            @default(0) @map("max_children") @db.SmallInt
+  maxOccupancy   Int            @default(2) @map("max_occupancy") @db.SmallInt
+  bedConfiguration String?      @map("bed_configuration") @db.VarChar(200)
+  sizeSqm        Decimal?       @map("size_sqm") @db.Decimal(7, 2)
+  amenities      String[]       @default([])
+  status         RoomTypeStatus @default(ACTIVE)
+  sortOrder      Int            @default(0) @map("sort_order")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  /// Composite FK keeps a room type inside its property's tenant.
+  property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  rooms        Room[]
+  inventoryDays InventoryDay[]
+  rateDays     RateDay[]
+  channelRoomMappings ChannelRoomMapping[]
+
+  @@unique([organizationId, id])
+  @@unique([propertyId, id])
+  @@unique([propertyId, code])
+  @@unique([propertyId, name])
+  @@index([organizationId, propertyId])
+  @@map("room_types")
+}
+
+/// A physical room or unit (e.g. "101").
+model Room {
+  id             String     @id @default(uuid(7)) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  propertyId     String     @map("property_id") @db.Uuid
+  roomTypeId     String     @map("room_type_id") @db.Uuid
+  name           String     @db.VarChar(60)
+  floor          String?    @db.VarChar(20)
+  status         RoomStatus @default(AVAILABLE)
+  notes          String?    @db.VarChar(1000)
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  /// (property, room type) FK: a room's type must belong to the same property (and therefore tenant).
+  roomType     RoomType     @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+
+  @@unique([propertyId, name])
+  @@index([organizationId, propertyId])
+  @@index([roomTypeId])
+  @@map("rooms")
+}
+
+/// Invitation to join an organization. Only the token hash is stored.
+model Invitation {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  email          String           @db.VarChar(254)
+  role           OrganizationRole
+  tokenHash      String           @unique @map("token_hash") @db.Char(64)
+  invitedById    String?          @map("invited_by_id") @db.Uuid
+  expiresAt      DateTime         @map("expires_at") @db.Timestamptz(3)
+  acceptedAt     DateTime?        @map("accepted_at") @db.Timestamptz(3)
+  revokedAt      DateTime?        @map("revoked_at") @db.Timestamptz(3)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, email])
+  @@map("invitations")
+}
+
+/// Platform plan catalog (global, not tenant-owned).
+model Plan {
+  id                String  @id @default(uuid(7)) @db.Uuid
+  code              String  @unique @db.VarChar(20)
+  name              String  @db.VarChar(60)
+  maxProperties     Int     @map("max_properties")
+  maxUsers          Int     @map("max_users")
+  maxChannels       Int     @map("max_channels")
+  priceMonthlyMinor Int     @map("price_monthly_minor")
+  currency          String  @default("INR") @db.Char(3)
+  trialDays         Int     @default(0) @map("trial_days")
+  isActive          Boolean @default(true) @map("is_active")
+  sortOrder         Int     @default(0) @map("sort_order")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  organizationId   String             @unique @map("organization_id") @db.Uuid
+  planId           String             @map("plan_id") @db.Uuid
+  status           SubscriptionStatus @default(TRIALING)
+  trialEndsAt      DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  currentPeriodEnd DateTime?          @map("current_period_end") @db.Timestamptz(3)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@map("subscriptions")
+}
+
+/// Time-boxed, owner-approved, audited access for platform support staff.
+model SupportAccessRequest {
+  id              String              @id @default(uuid(7)) @db.Uuid
+  organizationId  String              @map("organization_id") @db.Uuid
+  requestedById   String              @map("requested_by_id") @db.Uuid
+  reason          String              @db.VarChar(500)
+  durationMinutes Int                 @map("duration_minutes")
+  status          SupportAccessStatus @default(PENDING)
+  decidedById     String?             @map("decided_by_id") @db.Uuid
+  decidedAt       DateTime?           @map("decided_at") @db.Timestamptz(3)
+  expiresAt       DateTime?           @map("expires_at") @db.Timestamptz(3)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, status])
+  @@index([requestedById, status])
+  @@map("support_access_requests")
+}
+
+enum IntegrationCallOutcome {
+  SUCCESS
+  AUTH_ERROR
+  CLIENT_ERROR
+  RATE_LIMITED
+  SERVER_ERROR
+  TIMEOUT
+  NETWORK_ERROR
+  INVALID_RESPONSE
+  PROVIDER_ERROR
+}
+
+/// Outbound channel-provider calls. Metadata only: never credentials, request or response bodies.
+model IntegrationCallLog {
+  id           String                 @id @default(uuid(7)) @db.Uuid
+  provider     String                 @db.VarChar(30)
+  environment  String                 @db.VarChar(20)
+  operation    String                 @db.VarChar(60)
+  httpMethod   String                 @map("http_method") @db.VarChar(10)
+  path         String                 @db.VarChar(200)
+  httpStatus   Int?                   @map("http_status")
+  outcome      IntegrationCallOutcome
+  durationMs   Int                    @map("duration_ms")
+  attempts     Int                    @default(1)
+  errorCode    String?                @map("error_code") @db.VarChar(60)
+  errorMessage String?                @map("error_message") @db.VarChar(300)
+  /// Provider status envelope (Zodomus status.returnCode / returnMessage).
+  providerCode    Int?                @map("provider_code")
+  providerMessage String?             @map("provider_message") @db.VarChar(300)
+  requestId    String?                @map("request_id") @db.VarChar(64)
+  actorUserId  String?                @map("actor_user_id") @db.Uuid
+  createdAt    DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([provider, createdAt])
+  @@map("integration_call_logs")
+}
+
+/// Cached read-only reference data from a provider (platform-wide, e.g. the channel list). Sanitized before storage.
+model ProviderReferenceData {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  provider    String   @db.VarChar(30)
+  environment String   @db.VarChar(20)
+  kind        String   @db.VarChar(40)
+  payload     Json
+  itemCount   Int?     @map("item_count")
+  fetchedAt   DateTime @map("fetched_at") @db.Timestamptz(3)
+  fetchedById String?  @map("fetched_by_id") @db.Uuid
+
+  @@unique([provider, environment, kind])
+  @@map("provider_reference_data")
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 5: rate plans, inventory & rates calendar, channel mapping, sync jobs
+// ---------------------------------------------------------------------------
+
+enum RatePlanStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ChannelConnectionStatus {
+  /// Created in StaySync; property activation at the channel manager has not succeeded yet.
+  DRAFT
+  /// Property activated with Zodomus; rooms and rates not mapped yet.
+  ACTIVATED
+  /// Rooms and rates mapped and activated; availability and rates are synchronised.
+  ACTIVE
+  /// The last activation or mapping step failed (see last_error).
+  ERROR
+  DISCONNECTED
+}
+
+enum SyncJobKind {
+  AVAILABILITY
+  RATES
+  RATES_DERIVED
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+/// A sellable price plan of a property (e.g. "Standard rate", "Breakfast included").
+model RatePlan {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  propertyId     String         @map("property_id") @db.Uuid
+  name           String         @db.VarChar(120)
+  code           String         @db.VarChar(20)
+  description    String?        @db.VarChar(1000)
+  mealPlan       String?        @map("meal_plan") @db.VarChar(40)
+  /// Derived pricing (Booking.com price model 2): discount for a single guest, in percent of the base price.
+  singleOccupancyDiscountPct Int? @map("single_occupancy_discount_pct") @db.SmallInt
+  status         RatePlanStatus @default(ACTIVE)
+  sortOrder      Int            @default(0) @map("sort_order")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  rateDays     RateDay[]
+  channelRateMappings ChannelRateMapping[]
+
+  @@unique([organizationId, id])
+  @@unique([propertyId, id])
+  @@unique([propertyId, code])
+  @@unique([propertyId, name])
+  @@map("rate_plans")
+}
+
+/// Availability of a room type on one property-local date. No row = the default (number of rooms in service).
+model InventoryDay {
+  organizationId String   @map("organization_id") @db.Uuid
+  propertyId     String   @map("property_id") @db.Uuid
+  roomTypeId     String   @map("room_type_id") @db.Uuid
+  date           DateTime @db.Date
+  /// Units to sell; NULL = default (rooms of this type that are not out of service).
+  available      Int?     @db.SmallInt
+  stopSell       Boolean  @default(false) @map("stop_sell")
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  roomType RoomType @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+
+  @@id([roomTypeId, date])
+  @@index([organizationId, propertyId, date])
+  @@map("inventory_days")
+}
+
+/// Price and restrictions of a room type under a rate plan on one property-local date.
+model RateDay {
+  organizationId    String   @map("organization_id") @db.Uuid
+  propertyId        String   @map("property_id") @db.Uuid
+  roomTypeId        String   @map("room_type_id") @db.Uuid
+  ratePlanId        String   @map("rate_plan_id") @db.Uuid
+  date              DateTime @db.Date
+  /// Price for maximum (or base) occupancy, in minor units of the property currency. NULL = not set (nothing is sent).
+  priceMinor        Int?     @map("price_minor")
+  /// Single-occupancy price (Booking.com price model 1), minor units.
+  priceSingleMinor  Int?     @map("price_single_minor")
+  minStay           Int?     @map("min_stay") @db.SmallInt
+  maxStay           Int?     @map("max_stay") @db.SmallInt
+  closed            Boolean  @default(false)
+  closedOnArrival   Boolean  @default(false) @map("closed_on_arrival")
+  closedOnDeparture Boolean  @default(false) @map("closed_on_departure")
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  roomType RoomType @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+  ratePlan RatePlan @relation(fields: [propertyId, ratePlanId], references: [propertyId, id], onDelete: Restrict)
+
+  @@id([roomTypeId, ratePlanId, date])
+  @@index([organizationId, propertyId, date])
+  @@map("rate_days")
+}
+
+/// A property connected to one channel (e.g. Booking.com) through the channel manager.
+model ChannelConnection {
+  id                String                  @id @default(uuid(7)) @db.Uuid
+  organizationId    String                  @map("organization_id") @db.Uuid
+  propertyId        String                  @map("property_id") @db.Uuid
+  provider          String                  @default("zodomus") @db.VarChar(30)
+  environment       String                  @db.VarChar(20)
+  /// Channel id at the channel manager (Zodomus: 1 = Booking.com).
+  channelId         Int                     @map("channel_id")
+  channelName       String                  @map("channel_name") @db.VarChar(60)
+  /// The property's id at the channel (e.g. the Booking.com hotel id).
+  channelPropertyId String                  @map("channel_property_id") @db.VarChar(40)
+  priceModelId      Int                     @map("price_model_id") @db.SmallInt
+  currency          String                  @db.Char(3)
+  status            ChannelConnectionStatus @default(DRAFT)
+  lastError         String?                 @map("last_error") @db.VarChar(300)
+  lastCheckAt       DateTime?               @map("last_check_at") @db.Timestamptz(3)
+  lastCheckMessage  String?                 @map("last_check_message") @db.VarChar(300)
+  /// Cached GET /room-rates result (normalised: rooms with rates), refreshed on request.
+  channelRooms      Json?                   @map("channel_rooms")
+  channelRoomsFetchedAt DateTime?           @map("channel_rooms_fetched_at") @db.Timestamptz(3)
+  activatedAt       DateTime?               @map("activated_at") @db.Timestamptz(3)
+  /// Set when POST /rooms-activation succeeded (the property may still await confirmation).
+  roomsActivatedAt  DateTime?               @map("rooms_activated_at") @db.Timestamptz(3)
+  createdById       String?                 @map("created_by_id") @db.Uuid
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  roomMappings ChannelRoomMapping[]
+  syncJobs     SyncJob[]
+
+  @@unique([organizationId, id])
+  /// A channel property can be connected to only one StaySync property, platform-wide.
+  @@unique([provider, environment, channelId, channelPropertyId])
+  @@unique([propertyId, provider, channelId])
+  @@map("channel_connections")
+}
+
+model ChannelRoomMapping {
+  id              String @id @default(uuid(7)) @db.Uuid
+  organizationId  String @map("organization_id") @db.Uuid
+  connectionId    String @map("connection_id") @db.Uuid
+  propertyId      String @map("property_id") @db.Uuid
+  roomTypeId      String @map("room_type_id") @db.Uuid
+  channelRoomId   String @map("channel_room_id") @db.VarChar(40)
+  channelRoomName String @map("channel_room_name") @db.VarChar(200)
+
+  connection ChannelConnection @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Cascade)
+  roomType   RoomType          @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+  rates      ChannelRateMapping[]
+
+  @@unique([connectionId, channelRoomId])
+  @@unique([connectionId, roomTypeId])
+  @@index([organizationId])
+  @@map("channel_room_mappings")
+}
+
+model ChannelRateMapping {
+  id              String  @id @default(uuid(7)) @db.Uuid
+  organizationId  String  @map("organization_id") @db.Uuid
+  roomMappingId   String  @map("room_mapping_id") @db.Uuid
+  propertyId      String  @map("property_id") @db.Uuid
+  ratePlanId      String  @map("rate_plan_id") @db.Uuid
+  channelRateId   String  @map("channel_rate_id") @db.VarChar(40)
+  channelRateName String  @map("channel_rate_name") @db.VarChar(200)
+  maxPersons      Int?    @map("max_persons") @db.SmallInt
+
+  roomMapping ChannelRoomMapping @relation(fields: [roomMappingId], references: [id], onDelete: Cascade)
+  ratePlan    RatePlan           @relation(fields: [propertyId, ratePlanId], references: [propertyId, id], onDelete: Restrict)
+
+  @@unique([roomMappingId, channelRateId])
+  @@unique([roomMappingId, ratePlanId])
+  @@index([organizationId])
+  @@map("channel_rate_mappings")
+}
+
+/// Outbox of channel updates. A worker sends PENDING jobs; ranges for the same target are merged while pending.
+model SyncJob {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  connectionId   String        @map("connection_id") @db.Uuid
+  kind           SyncJobKind
+  status         SyncJobStatus @default(PENDING)
+  roomTypeId     String?       @map("room_type_id") @db.Uuid
+  ratePlanId     String?       @map("rate_plan_id") @db.Uuid
+  dateFrom       DateTime      @map("date_from") @db.Date
+  /// Exclusive (same convention as Zodomus).
+  dateTo         DateTime      @map("date_to") @db.Date
+  attempts       Int           @default(0)
+  callsMade      Int           @default(0) @map("calls_made")
+  nextAttemptAt  DateTime      @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  lockedAt       DateTime?     @map("locked_at") @db.Timestamptz(3)
+  lastError      String?       @map("last_error") @db.VarChar(300)
+  providerCode   Int?          @map("provider_code")
+  requestedById  String?       @map("requested_by_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  finishedAt     DateTime?     @map("finished_at") @db.Timestamptz(3)
+
+  connection ChannelConnection @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([connectionId, createdAt])
+  @@map("sync_jobs")
+}

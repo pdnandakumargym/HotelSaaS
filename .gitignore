@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.angular/
+*.log
+.env
+.env.*
+!.env.example
+apps/api/src/generated/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
