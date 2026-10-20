@@ -9,8 +9,13 @@ import { createDefaultSubscription } from '../../src/modules/subscriptions/plan-
 import type { OrganizationRole, PlatformRole } from '../../src/generated/prisma/enums.js';
 import { DbCallRecorder } from '../../src/modules/channels/integration.service.js';
 import { ZodomusAdapter } from '../../src/modules/channels/zodomus/zodomus.adapter.js';
+import { Beds24Adapter } from '../../src/modules/channels/beds24/beds24.adapter.js';
 import type { FetchLike } from '../../src/modules/channels/zodomus/zodomus.client.js';
 import { fakeHealth, memoryLogger, testConfig } from '../helpers.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { LocalPhotoStorage } from '../../src/modules/photos/storage.js';
 
 export const ORIGIN = 'http://localhost:4200';
 export const STRONG_PASSWORD = 'correct horse battery staple';
@@ -88,20 +93,36 @@ export class Client {
   }
 }
 
+/** One temporary photo folder per test process (shared by harnesses in the same file). */
+const PHOTO_DIR = mkdtempSync(join(tmpdir(), 'staysync-photos-'));
+
 const noNetwork: FetchLike = () => Promise.reject(new Error('Network access is disabled in tests'));
 
 /**
  * `channelFetch` replaces the network for the Zodomus adapter. Integration tests never call the
  * real Zodomus API (and so can never touch real inventory).
  */
-export function createHarness(overrides: Record<string, string> = {}, opts: { channelFetch?: FetchLike } = {}): Promise<Harness> {
+export function createHarness(
+  overrides: Record<string, string> = {},
+  opts: { channelFetch?: FetchLike; beds24?: { fetch: FetchLike; allowWrites?: boolean; calendarToInclusive?: boolean | null } } = {},
+): Promise<Harness> {
   const db = createDatabase({ connectionString: process.env.TEST_DATABASE_URL!, max: 5 });
   const mailer = new MemoryMailer();
   const clock = { offsetMs: 0 };
   const { logger, lines } = memoryLogger('info');
   const config = testConfig({ LOG_LEVEL: 'info', TRUST_PROXY: 'loopback', ...overrides });
   const channelProvider = new ZodomusAdapter(config.zodomus, logger, new DbCallRecorder(db), opts.channelFetch ?? noNetwork, { backoffMs: 0 });
-  const services = createServices({ db, config, logger, mailer, rateLimits: { disabled: true }, now: () => Date.now() + clock.offsetMs, channelProvider });
+  // Beds24 cannot be enabled through the environment in tests (accounts are live); a fake-fetch adapter is built directly.
+  const beds24Provider = opts.beds24
+    ? new Beds24Adapter(
+        { enabled: true, baseUrl: 'https://beds24.fake.test/api/v2', timeoutMs: 5000, credentialsConfigured: true, refreshToken: 'fake-beds24-refresh-token', allowWrites: opts.beds24.allowWrites ?? true, calendarToInclusive: opts.beds24.calendarToInclusive === undefined ? true : opts.beds24.calendarToInclusive },
+        logger,
+        new DbCallRecorder(db),
+        opts.beds24.fetch,
+        { backoffMs: 0 },
+      )
+    : new Beds24Adapter(config.beds24, logger, new DbCallRecorder(db), noNetwork, { backoffMs: 0 });
+  const services = createServices({ db, config, logger, mailer, rateLimits: { disabled: true }, now: () => Date.now() + clock.offsetMs, channelProvider, beds24Provider, photoStorage: new LocalPhotoStorage(PHOTO_DIR) });
   const app = createApp({ config, logger, health: fakeHealth(), services });
   const run = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   let n = 0;

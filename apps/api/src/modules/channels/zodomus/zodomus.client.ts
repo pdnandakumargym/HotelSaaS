@@ -33,12 +33,20 @@ export const ZODOMUS_OPERATIONS = {
   availability: { method: 'POST', path: '/availability', retry: true },
   rates: { method: 'POST', path: '/rates', retry: true },
   ratesDerived: { method: 'POST', path: '/rates-derived', retry: true },
+  reservationsQueue: { method: 'GET', path: '/reservations-queue', retry: true },
+  reservations: { method: 'GET', path: '/reservations', retry: true },
+  reservationsSummary: { method: 'GET', path: '/reservations-summary', retry: true },
+  // Sandbox only (the adapter refuses it in production).
+  reservationsCreateTest: { method: 'POST', path: '/reservations-createtest', retry: false },
+  promotions: { method: 'GET', path: '/promotions', retry: true },
+  promotionActivate: { method: 'POST', path: '/activate-promotion', retry: false },
+  promotionDeactivate: { method: 'POST', path: '/deactivate-promotion', retry: false },
 } as const;
 export type ZodomusOperation = keyof typeof ZODOMUS_OPERATIONS;
 
 export class ProductionWriteBlockedError extends Error {
-  constructor() {
-    super('Writes to the Zodomus production environment are disabled (set ZODOMUS_ALLOW_PRODUCTION_WRITES=true).');
+  constructor(message = 'Writes to the Zodomus production environment are disabled (set ZODOMUS_ALLOW_PRODUCTION_WRITES=true).') {
+    super(message);
     this.name = 'ProductionWriteBlockedError';
   }
 }

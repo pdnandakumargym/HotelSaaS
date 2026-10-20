@@ -27,9 +27,12 @@
     "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "admin:create": "npm run admin:create -w @staysync/api --",
     "zodomus:probe": "npm run zodomus:probe -w @staysync/api",
-    "zodomus:check": "npm run zodomus:check -w @staysync/api --"
+    "zodomus:check": "npm run zodomus:check -w @staysync/api --",
+    "zodomus:reservations": "npm run zodomus:reservations -w @staysync/api --",
+    "e2e": "playwright test -c e2e/playwright.config.ts"
   },
   "devDependencies": {
-    "concurrently": "^10.0.6"
+    "concurrently": "^10.0.6",
+    "@playwright/test": "1.64.0"
   }
 }

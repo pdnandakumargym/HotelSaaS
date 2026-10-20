@@ -6,8 +6,16 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.production.example
 apps/api/src/generated/
 .vscode/*
 !.vscode/extensions.json
 .DS_Store
 Thumbs.db
+
+# Uploaded photos (local storage)
+apps/api/storage/
+
+# Production secrets and backups
+infra/.env.production
+infra/backups/

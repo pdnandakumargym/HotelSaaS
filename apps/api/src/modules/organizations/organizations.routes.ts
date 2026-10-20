@@ -16,6 +16,15 @@ import { propertiesRouter } from '../properties/properties.routes.js';
 import { channelOptionsRouter, connectionsRouter, orgChannelsRouter } from '../channels/channels.routes.js';
 import type { ChannelConnectionService } from '../channels/connection.service.js';
 import { ratesRouter } from '../rates/rates.routes.js';
+import { connectionReservationsRouter, operationsRouter, reservationsRouter } from '../reservations/reservations.routes.js';
+import type { ReservationService } from '../reservations/reservation.service.js';
+import type { DiscrepancyService } from '../discrepancies/discrepancy.service.js';
+import { photosRouter } from '../photos/photos.routes.js';
+import { reportsRouter } from '../reports/reports.routes.js';
+import { promotionsRouter } from '../promotions/promotions.routes.js';
+import type { ProviderRegistry } from '../channels/provider-registry.js';
+import type { ReportService } from '../reports/report.service.js';
+import type { PhotoService } from '../photos/photo.service.js';
 import type { IntegrationService } from '../channels/integration.service.js';
 import { currency } from '../properties/properties.schemas.js';
 import { getSubscription, usage } from '../subscriptions/plan-limits.js';
@@ -62,16 +71,22 @@ function id(req: Request, name: string): string {
  * Tenant routes. Every handler runs inside withTenant(), so PostgreSQL row-level security
  * restricts queries to the organization the caller was authorized for.
  */
-export function organizationsRouter(deps: { db: Database; config: AppConfig; audit: AuditService; invitations: InvitationService; support: SupportAccessService; integrations: IntegrationService; connections: ChannelConnectionService }): Router {
+export function organizationsRouter(deps: { db: Database; config: AppConfig; audit: AuditService; invitations: InvitationService; support: SupportAccessService; integrations: IntegrationService; connections: ChannelConnectionService; reservations: ReservationService; discrepancies: DiscrepancyService; photos: PhotoService; reports: ReportService; providers: ProviderRegistry }): Router {
   const { db, config, audit, invitations, support } = deps;
   const r = Router();
   r.use(requireAuth());
   const recent = requireRecentAuth(config);
 
+  r.use('/:orgId/properties/:propertyId/photos', photosRouter({ photos: deps.photos, config }));
   r.use('/:orgId/properties', propertiesRouter({ db, audit }));
   r.use('/:orgId/channels', orgChannelsRouter({ db, integrations: deps.integrations, connections: deps.connections }));
   r.use('/:orgId/channel-options', channelOptionsRouter(deps.connections));
+  r.use('/:orgId/properties/:propertyId/channel-connections/:connectionId/promotions', promotionsRouter({ providers: deps.providers, connections: deps.connections, audit }));
+  r.use('/:orgId/properties/:propertyId/channel-connections/:connectionId/reservations', connectionReservationsRouter({ reservations: deps.reservations, connections: deps.connections }));
   r.use('/:orgId/properties/:propertyId/channel-connections', connectionsRouter({ connections: deps.connections }));
+  r.use('/:orgId/reports', reportsRouter(deps.reports));
+  r.use('/:orgId/reservations', reservationsRouter({ reservations: deps.reservations }));
+  r.use('/:orgId', operationsRouter({ db, audit, discrepancies: deps.discrepancies }));
   r.use('/:orgId/properties/:propertyId', ratesRouter({ db, audit }));
 
   r.get('/', (req, res) => {

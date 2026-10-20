@@ -4,12 +4,12 @@ Multi-tenant SaaS for hotels, homestays, villas, bungalows and resorts to manage
 property operations in one place, and later synchronize rates, availability and
 reservations to booking channels through the **Zodomus** channel-manager API.
 
-> **Status: Milestone 5 (Booking.com sync) complete.** Sign-in with 2FA, roles, tenant
-> isolation (PostgreSQL row-level security), properties, room types, rooms, amenities, plans and
-> limits, team invitations, and the admin portal (customers, plans, audited support access) work.
-> Milestone 5 adds rate plans, an inventory & rates calendar, and Booking.com via Zodomus: connect a
-> property, map rooms and rates, and availability and rates are sent automatically. Reservations
-> (Milestone 6) are not imported yet.
+> **Status: all seven milestones complete (StaySync 1.0).** Owner portal: properties, rooms, photos & amenities, inventory &
+> rates calendar, rate plans, Booking.com connection & mapping via Zodomus, bookings, synchronization status, discrepancy center,
+> promotions, reports, billing, team and security settings. Admin portal: customers, properties, plans, users, audited support
+> access, channel providers, Zodomus health, API logs, sync jobs and system health. Production deployment: Docker + Caddy (HTTPS),
+> separate worker, nightly backups — see [docs/deployment.md](docs/deployment.md) and the security review in
+> [docs/security.md](docs/security.md). Card data is never requested or stored.
 > See [docs/milestones.md](docs/milestones.md).
 
 | Layer | Technology |
@@ -112,6 +112,32 @@ Restart the API, then:
 4. Link each Booking.com room to your room type and each rate to a rate plan, then **Save mapping & activate rooms**.
 5. One year of availability and rates is sent in the background; see "Recent updates sent to Booking.com".
    Every call also appears in the admin portal under **API Logs**.
+
+### Bookings (Milestone 6)
+
+- Every minute StaySync reads the Zodomus reservation queue of each active connection, retrieves each new, modified or
+  cancelled booking once, stores it (guest details encrypted) and subtracts it from availability. The new availability is
+  then sent to every connected channel. **Bookings → Fetch new bookings now** does the same on demand.
+- On the first fetch, bookings made before the connection are imported once (`reservations-summary`); **Import bookings made
+  before connecting** repeats it.
+- In the sandbox, **Bookings → Create a test booking** asks Zodomus to create a new, modified or cancelled test booking
+  (`reservations-createtest`) and fetches it. Test bookings are labelled as such.
+- `npm run zodomus:reservations -- <property id>` (add `--create new` in the sandbox) prints the status envelope, the
+  response structure and what StaySync's parser understood (booking number, status, room ids, dates). Guest names and
+  contact details are never printed. Share this output if bookings do not appear as expected.
+- **Synchronization Status** shows queued, delivered and failed updates per connection and when bookings were last fetched;
+  failed updates can be retried. **Discrepancy Center** lists overbookings, unmapped rooms, incomplete bookings and
+  undelivered updates; most close automatically when the problem is gone.
+
+### Photos
+
+**Photos & Amenities** stores property and room-type photos (re-encoded, metadata removed) in `apps/api/storage/photos` by default
+(`PHOTO_STORAGE_DIR`). They are not sent to Booking.com yet; see [docs/milestones.md](docs/milestones.md).
+
+### Beds24 (optional second channel manager)
+
+A property can also be connected to **Beds24**, which passes availability and prices on to the channels connected in your
+Beds24 account (paid Beds24 accounts only). Setup, safety switches and what is synchronised: [docs/beds24-api.md](docs/beds24-api.md).
 
 Real Booking.com properties need Zodomus certification first, then `ZODOMUS_ENVIRONMENT=production` with production API keys and
 `ZODOMUS_ALLOW_PRODUCTION_WRITES=true` (see [docs/zodomus-api.md](docs/zodomus-api.md)).
@@ -216,12 +242,18 @@ Important rules enforced at startup:
 - tenant isolation in code plus PostgreSQL row-level security, under a least-privilege database role
 - audit events for all authentication and admin actions
 
-See [docs/architecture.md](docs/architecture.md#authentication-milestone-2). Not production-ready yet: the deployment
-hardening and threat review happen in Milestone 7.
+**Milestones 5–7:** guest data encrypted (AES-256-GCM) and audited when viewed, no card data, production writes need an explicit
+switch, photos re-encoded and served only to members or by signed links, upload and request rate limits, guest-data retention,
+non-root containers, database on an internal network, automatic HTTPS with HSTS. Full threat model, fixed findings, residual
+risks and the go-live checklist: [docs/security.md](docs/security.md).
+
+## End-to-end smoke tests
+
+With the app running locally: `E2E_OWNER_EMAIL=... E2E_OWNER_PASSWORD=... npm run e2e` (first time: `npx playwright install chromium`).
+Use a test account, never production credentials.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): architecture, module boundaries, request pipeline, ER diagram
 - [docs/decisions.md](docs/decisions.md): decisions and resolved conflicts with the reference documents
 - [docs/milestones.md](docs/milestones.md): roadmap, Milestone 1 results and known limitations
-"# HotelSaaS" 

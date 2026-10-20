@@ -6,6 +6,7 @@ import { ConfigError, loadConfig } from './config/env.js';
 import { createDatabase } from './infrastructure/db/prisma.js';
 import { PrismaHealthChecker } from './modules/health/health.service.js';
 import { createLogger } from './shared/logger.js';
+import { Heartbeat } from './infrastructure/workers/heartbeat.js';
 
 const VERSION = process.env.npm_package_version ?? '0.1.0';
 
@@ -32,7 +33,14 @@ async function main(): Promise<void> {
 
   const services = createServices({ db, config, logger, mailer: createMailer(config, logger) });
   const app = createApp({ config, logger, health, services, version: VERSION });
-  if (config.sync.workerEnabled) services.syncWorker.start(config.sync.intervalMs);
+  // Background loops run inside the API unless a separate worker process is used (SYNC_WORKER_ENABLED=false).
+  const heartbeat = new Heartbeat(db, 'api', VERSION, () => ({ sync: services.syncWorker.stats(), reservations: services.reservations.stats() }), logger);
+  if (config.sync.workerEnabled) {
+    services.syncWorker.start(config.sync.intervalMs);
+    services.reservations.start(config.sync.reservationPollMs);
+    services.reservations.startRetention();
+    heartbeat.start();
+  }
   const server = createServer(app);
   server.headersTimeout = 20_000;
   server.requestTimeout = 30_000;
@@ -63,6 +71,8 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down');
     const force = setTimeout(() => process.exit(1), 10_000).unref();
     services.syncWorker.stop();
+    services.reservations.stop();
+    void heartbeat.stop();
     server.close(() => {
       void db.$disconnect().finally(() => {
         clearTimeout(force);

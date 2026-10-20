@@ -9,6 +9,7 @@ import { getSubscription } from '../subscriptions/plan-limits.js';
 import type { ChannelProvider, ChannelRoom, ChannelSyncProvider, ProviderCallResult } from './channel-provider.js';
 import { enqueueFullSync } from './sync.service.js';
 import { ProductionWriteBlockedError } from './zodomus/zodomus.client.js';
+import type { ProviderRegistry } from './provider-registry.js';
 
 type Actor = { id: string };
 type SyncCapable = ChannelProvider & ChannelSyncProvider;
@@ -22,8 +23,8 @@ function callSummary(r: ProviderCallResult) {
   return { ok: r.ok, outcome: r.outcome, httpStatus: r.httpStatus, providerCode: r.providerCode ?? null, providerMessage: r.providerMessage ?? null, error: r.error?.message ?? null };
 }
 
-function failureText(step: string, r: ProviderCallResult): string {
-  const detail = r.providerMessage && r.providerMessage !== 'OK' ? ` Zodomus: ${r.providerMessage}` : '';
+function failureText(step: string, r: ProviderCallResult, providerName = 'Zodomus'): string {
+  const detail = r.providerMessage && r.providerMessage !== 'OK' ? ` ${providerName}: ${r.providerMessage}` : '';
   return `${step} failed: ${r.error?.message ?? r.outcome}.${detail}`.slice(0, 300);
 }
 
@@ -36,16 +37,23 @@ export class ChannelConnectionService {
   constructor(
     private readonly db: Database,
     private readonly config: AppConfig,
-    private readonly provider: ChannelProvider,
+    private readonly providers: ProviderRegistry,
     private readonly audit: AuditService,
   ) {}
 
-  private sync(): SyncCapable {
-    const p = this.provider as Partial<SyncCapable>;
-    if (!this.provider.isReady() || !p.activateProperty || !p.fetchRoomRates || !p.activateRooms || !p.checkProperty) {
+  /** The connection's channel manager (Zodomus unless the connection names another one). */
+  private sync(providerId = this.providers.primary.id): SyncCapable {
+    const provider = this.providers.get(providerId);
+    const p = provider as Partial<SyncCapable> | undefined;
+    if (!provider || !p || !provider.isReady() || !p.activateProperty || !p.fetchRoomRates || !p.activateRooms || !p.checkProperty) {
       throw new AppError(409, 'INTEGRATION_NOT_CONFIGURED', 'The channel manager is not enabled on this platform yet. Please contact support.');
     }
-    return this.provider as SyncCapable;
+    return provider as SyncCapable;
+  }
+
+  private static options(provider: ChannelProvider) {
+    const p = provider as Partial<SyncCapable>;
+    return { id: provider.id, displayName: provider.displayName, ready: provider.isReady(), environment: provider.configStatus().environment, channels: p.channels ? p.channels() : [] };
   }
 
   private async guarded<T>(fn: () => Promise<T>): Promise<T> {
@@ -57,9 +65,10 @@ export class ChannelConnectionService {
     }
   }
 
+  /** Top-level fields describe the primary provider (Zodomus) as before; `providers` lists every channel manager. */
   channels() {
-    const p = this.provider as Partial<SyncCapable>;
-    return { ready: this.provider.isReady(), environment: this.provider.configStatus().environment, channels: p.channels ? p.channels() : [] };
+    const primary = ChannelConnectionService.options(this.providers.primary);
+    return { ready: primary.ready, environment: primary.environment, channels: primary.channels, providers: this.providers.list().map((p) => ChannelConnectionService.options(p)) };
   }
 
   list(organizationId: string, propertyId: string) {
@@ -85,15 +94,16 @@ export class ChannelConnectionService {
   async create(
     organizationId: string,
     propertyId: string,
-    input: { channelId: number; channelPropertyId: string; priceModelId: number },
+    input: { channelId: number; channelPropertyId: string; priceModelId: number; provider?: string },
     actor: Actor,
     meta: RequestMeta,
   ) {
-    const provider = this.sync();
+    const providerId = input.provider ?? this.providers.primary.id;
+    const provider = this.sync(providerId);
     const channel = provider.channels().find((c) => c.channelId === input.channelId);
     if (!channel) throw new AppError(400, 'UNKNOWN_CHANNEL', 'This channel is not available.');
     if (!channel.priceModels.some((m) => m.id === input.priceModelId)) throw new AppError(400, 'UNSUPPORTED_PRICE_MODEL', `${channel.name} does not support this price model.`);
-    const environment = this.provider.configStatus().environment;
+    const environment = provider.configStatus().environment;
 
     const connection = await withTenant(this.db, organizationId, async (tx) => {
       const property = await tx.property.findUnique({ where: { id: propertyId }, select: { id: true, currency: true } });
@@ -102,7 +112,7 @@ export class ChannelConnectionService {
       if (inUse >= sub.plan.maxChannels) {
         throw new AppError(402, 'PLAN_LIMIT_REACHED', `Your ${sub.plan.name} plan allows ${sub.plan.maxChannels} channel connection(s). Upgrade to connect more.`, { limit: sub.plan.maxChannels });
       }
-      const existing = await tx.channelConnection.findFirst({ where: { propertyId, provider: 'zodomus', channelId: input.channelId } });
+      const existing = await tx.channelConnection.findFirst({ where: { propertyId, provider: providerId, channelId: input.channelId } });
       if (existing && existing.status !== 'DISCONNECTED') throw new AppError(409, 'ALREADY_CONNECTED', `This property already has a ${channel.name} connection.`);
       const data = {
         environment,
@@ -117,9 +127,9 @@ export class ChannelConnectionService {
       };
       const c = existing
         ? await tx.channelConnection.update({ where: { id: existing.id }, data: { ...data, activatedAt: null, channelRoomsFetchedAt: null } })
-        : await tx.channelConnection.create({ data: { ...data, organizationId, propertyId, provider: 'zodomus', channelId: input.channelId } });
+        : await tx.channelConnection.create({ data: { ...data, organizationId, propertyId, provider: providerId, channelId: input.channelId } });
       await this.audit.record(
-        { action: 'channel.connection.created', organizationId, actorUserId: actor.id, entityType: 'channel_connection', entityId: c.id, metadata: { channel: channel.name, priceModelId: input.priceModelId, environment }, ...meta },
+        { action: 'channel.connection.created', organizationId, actorUserId: actor.id, entityType: 'channel_connection', entityId: c.id, metadata: { provider: providerId, channel: channel.name, priceModelId: input.priceModelId, environment }, ...meta },
         tx,
       );
       return c;
@@ -129,14 +139,14 @@ export class ChannelConnectionService {
 
   /** POST /property-activation (also used to retry a failed activation). */
   async activate(organizationId: string, connectionId: string, actor: Actor, meta: RequestMeta) {
-    const provider = this.sync();
     const c = await this.get(organizationId, connectionId);
     if (c.status === 'DISCONNECTED') throw new AppError(409, 'DISCONNECTED', 'This connection was disconnected.');
+    const provider = this.sync(c.provider);
     const r = await this.guarded(() => provider.activateProperty({ channelId: c.channelId, channelPropertyId: c.channelPropertyId, priceModelId: c.priceModelId }, { requestId: meta.requestId, actorUserId: actor.id }));
     const updated = await withTenant(this.db, organizationId, async (tx) => {
       const u = await tx.channelConnection.update({
         where: { id: c.id },
-        data: r.ok ? { status: c.status === 'ACTIVE' ? 'ACTIVE' : 'ACTIVATED', activatedAt: new Date(), lastError: null } : { lastError: failureText('Property activation', r) },
+        data: r.ok ? { status: c.status === 'ACTIVE' ? 'ACTIVE' : 'ACTIVATED', activatedAt: new Date(), lastError: null } : { lastError: failureText('Property activation', r, provider.displayName) },
       });
       await this.audit.record(
         { action: r.ok ? 'channel.property.activated' : 'channel.property.activation_failed', organizationId, actorUserId: actor.id, entityType: 'channel_connection', entityId: c.id, metadata: { outcome: r.outcome, providerCode: r.providerCode ?? null }, ...meta },
@@ -150,16 +160,16 @@ export class ChannelConnectionService {
 
   /** GET /room-rates → cached list of the channel's rooms and rates used by the mapping screen. */
   async refreshRoomRates(organizationId: string, connectionId: string, actor: Actor, meta: RequestMeta) {
-    const provider = this.sync();
     const c = await this.get(organizationId, connectionId);
     if (c.status === 'DRAFT' || c.status === 'DISCONNECTED') throw new AppError(409, 'NOT_ACTIVATED', 'Activate the property first.');
+    const provider = this.sync(c.provider);
     const r = await provider.fetchRoomRates({ channelId: c.channelId, channelPropertyId: c.channelPropertyId }, { requestId: meta.requestId, actorUserId: actor.id });
     if (r.ok && r.data) {
       await withTenant(this.db, organizationId, (tx) =>
         tx.channelConnection.update({ where: { id: c.id }, data: { channelRooms: r.data as unknown as Prisma.InputJsonValue, channelRoomsFetchedAt: new Date(), lastError: null } }),
       );
     } else {
-      await withTenant(this.db, organizationId, (tx) => tx.channelConnection.update({ where: { id: c.id }, data: { lastError: failureText('Loading rooms and rates', r) } }));
+      await withTenant(this.db, organizationId, (tx) => tx.channelConnection.update({ where: { id: c.id }, data: { lastError: failureText('Loading rooms and rates', r, provider.displayName) } }));
     }
     return { connection: await this.get(organizationId, c.id), result: callSummary(r) };
   }
@@ -169,8 +179,9 @@ export class ChannelConnectionService {
    * On success the connection becomes ACTIVE and one year of availability and rates is queued.
    */
   async saveMapping(organizationId: string, connectionId: string, input: MappingInput, actor: Actor, meta: RequestMeta) {
-    const provider = this.sync();
     const ctx = { requestId: meta.requestId, actorUserId: actor.id };
+    const current = await this.get(organizationId, connectionId);
+    const provider = this.sync(current.provider);
     const plan = await withTenant(this.db, organizationId, async (tx) => {
       const c = await tx.channelConnection.findUnique({ where: { id: connectionId } });
       if (!c) throw new AppError(404, 'NOT_FOUND', 'Connection not found');
@@ -243,7 +254,7 @@ export class ChannelConnectionService {
     const act = await run('rooms-activation', () =>
       provider.activateRooms({ ...ref, rooms: plan.resolved.map((r) => ({ channelRoomId: r.channelRoomId, name: r.channelRoomName, quantity: r.quantity, channelRateIds: r.rates.map((x) => x.channelRateId) })) }, ctx),
     );
-    if (!act.ok) failed = failureText('Room activation', act);
+    if (!act.ok) failed = failureText('Room activation', act, provider.displayName);
     let check2: ProviderCallResult | null = null;
     if (!failed) check2 = await run('property-check', () => provider.checkProperty(ref, ctx));
     // Rooms activated but the property not confirmed yet (e.g. Booking.com still has to accept Zodomus):
@@ -261,7 +272,7 @@ export class ChannelConnectionService {
                 roomsActivatedAt: new Date(),
                 lastCheckAt: new Date(),
                 lastCheckMessage: (check2?.providerMessage ?? check2?.outcome ?? '').slice(0, 300),
-                lastError: `Rooms activated. The property is not confirmed yet${check2?.providerMessage ? ` (Zodomus: ${check2.providerMessage})` : ''}. Use "Check status" again later.`.slice(0, 300),
+                lastError: `Rooms activated. The property is not confirmed yet${check2?.providerMessage ? ` (${provider.displayName}: ${check2.providerMessage})` : ''}. Use "Check status" again later.`.slice(0, 300),
               }
             : { status: 'ACTIVE', roomsActivatedAt: new Date(), lastError: null, lastCheckAt: new Date(), lastCheckMessage: check2?.providerMessage ?? null },
       });
@@ -283,9 +294,9 @@ export class ChannelConnectionService {
   }
 
   async check(organizationId: string, connectionId: string, actor: Actor, meta: RequestMeta) {
-    const provider = this.sync();
     const c = await this.get(organizationId, connectionId);
     if (c.status === 'DRAFT' || c.status === 'DISCONNECTED') throw new AppError(409, 'NOT_ACTIVATED', 'Activate the property first.');
+    const provider = this.sync(c.provider);
     const r = await this.guarded(() => provider.checkProperty({ channelId: c.channelId, channelPropertyId: c.channelPropertyId }, { requestId: meta.requestId, actorUserId: actor.id }));
     // A successful check after rooms were activated completes the connection and starts the first full sync.
     const promote = r.ok && c.status !== 'ACTIVE' && c.roomsActivatedAt !== null && c.roomMappings.length > 0;
@@ -322,10 +333,10 @@ export class ChannelConnectionService {
     if (c.status === 'DISCONNECTED') return { connection: c, result: null };
     let summary: ReturnType<typeof callSummary> | null = null;
     if (c.status !== 'DRAFT') {
-      const provider = this.sync();
+      const provider = this.sync(c.provider);
       const r = await this.guarded(() => provider.deactivateProperty({ channelId: c.channelId, channelPropertyId: c.channelPropertyId }, { requestId: meta.requestId, actorUserId: actor.id }));
       summary = callSummary(r);
-      if (!r.ok) throw new AppError(502, 'DISCONNECT_FAILED', failureText('Disconnect', r), summary);
+      if (!r.ok) throw new AppError(502, 'DISCONNECT_FAILED', failureText('Disconnect', r, provider.displayName), summary);
     }
     await withTenant(this.db, organizationId, async (tx) => {
       await tx.channelConnection.update({ where: { id: c.id }, data: { status: 'DISCONNECTED', lastError: null } });

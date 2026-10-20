@@ -6,6 +6,8 @@ import { addDays, eachDate, fromDbDate, maxDate, minDate, minorToDecimal, toDbDa
 import { effectiveAvailability } from '../rates/calendar.service.js';
 import type { CallOutcome, ChannelProvider, ChannelSyncProvider, ProviderCallResult } from './channel-provider.js';
 import { ProductionWriteBlockedError } from './zodomus/zodomus.client.js';
+import type { ProviderRegistry } from './provider-registry.js';
+import { autoResolve, checkOverbooking, raiseDiscrepancy } from '../discrepancies/discrepancy.service.js';
 
 const TRANSIENT: ReadonlySet<CallOutcome> = new Set(['RATE_LIMITED', 'SERVER_ERROR', 'TIMEOUT', 'NETWORK_ERROR']);
 const MAX_ATTEMPTS = 8;
@@ -135,10 +137,16 @@ type Call = () => Promise<ProviderCallResult>;
 export class SyncWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private readonly counters = { jobsProcessed: 0, runs: 0, lastRunAt: null as string | null, lastError: null as string | null };
+
+  /** Counters since start (for worker heartbeats; no tenant data). */
+  stats() {
+    return { ...this.counters };
+  }
 
   constructor(
     private readonly db: Database,
-    private readonly provider: ChannelProvider,
+    private readonly providers: ProviderRegistry,
     private readonly logger: Logger,
     private readonly now: () => number = Date.now,
   ) {}
@@ -146,7 +154,10 @@ export class SyncWorker {
   start(intervalMs: number): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.runOnce().catch((err: unknown) => this.logger.error({ err: (err as Error).message }, 'sync worker run failed'));
+      void this.runOnce().catch((err: unknown) => {
+        this.counters.lastError = (err as Error).message.slice(0, 200);
+        this.logger.error({ err: (err as Error).message }, 'sync worker run failed');
+      });
     }, intervalMs);
     this.timer.unref();
   }
@@ -177,6 +188,9 @@ export class SyncWorker {
           RETURNING id, organization_id`;
       });
       for (const j of jobs) await this.process(j);
+      this.counters.runs++;
+      this.counters.jobsProcessed += jobs.length;
+      this.counters.lastRunAt = new Date(this.now()).toISOString();
       return jobs.length;
     } finally {
       this.running = false;
@@ -218,7 +232,10 @@ export class SyncWorker {
 
   private async finish(row: JobRow, result: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'RETRY', info: { error?: string; providerCode?: number | null; callsMade?: number }): Promise<void> {
     await withTenant(this.db, row.organization_id, async (tx) => {
-      const job = await tx.syncJob.findUniqueOrThrow({ where: { id: row.id }, select: { attempts: true, connectionId: true, kind: true } });
+      const job = await tx.syncJob.findUniqueOrThrow({
+        where: { id: row.id },
+        select: { attempts: true, connectionId: true, kind: true, roomTypeId: true, ratePlanId: true, dateFrom: true, dateTo: true, connection: { select: { propertyId: true, channelName: true } } },
+      });
       const giveUp = result === 'RETRY' && job.attempts >= MAX_ATTEMPTS;
       const status = result === 'RETRY' ? (giveUp ? 'FAILED' : 'PENDING') : result;
       const backoff = Math.min(30_000 * 2 ** (job.attempts - 1), 3_600_000);
@@ -234,21 +251,40 @@ export class SyncWorker {
           finishedAt: status === 'PENDING' ? null : new Date(this.now()),
         },
       });
-      if (status === 'FAILED') this.logger.warn({ jobId: row.id, kind: job.kind, connectionId: job.connectionId, error: info.error }, 'channel sync job failed');
+      // One open discrepancy per sync target; it closes by itself when a later update for the target succeeds.
+      const key = `sync:${job.connectionId}:${job.kind}:${job.roomTypeId ?? '-'}:${job.ratePlanId ?? '-'}`;
+      if (status === 'FAILED') {
+        this.logger.warn({ jobId: row.id, kind: job.kind, connectionId: job.connectionId, error: info.error }, 'channel sync job failed');
+        const what = job.kind === 'AVAILABILITY' ? 'Availability' : job.kind === 'RATES' ? 'Rates' : 'Derived price offsets';
+        await raiseDiscrepancy(tx, {
+          organizationId: row.organization_id,
+          propertyId: job.connection.propertyId,
+          connectionId: job.connectionId,
+          syncJobId: row.id,
+          kind: 'SYNC_FAILED',
+          severity: job.kind === 'AVAILABILITY' ? 'high' : 'medium',
+          message: `${what} for ${fromDbDate(job.dateFrom)} – ${fromDbDate(job.dateTo)} could not be sent to ${job.connection.channelName}: ${info.error ?? 'unknown error'}`.slice(0, 300),
+          details: { jobId: row.id, kind: job.kind, roomTypeId: job.roomTypeId, ratePlanId: job.ratePlanId, providerCode: info.providerCode ?? null, attempts: job.attempts },
+          dedupeKey: key,
+        });
+      } else if (status === 'SUCCEEDED') {
+        await autoResolve(tx, row.organization_id, key, 'A later update for the same rooms was delivered.');
+      }
     });
   }
 
   /** Builds the provider calls for one job from the current data. */
   private async plan(tx: Tx, jobId: string): Promise<{ calls: Call[]; skipReason: string | null }> {
-    const provider = this.provider as ChannelProvider & Partial<ChannelSyncProvider>;
-    if (!provider.isReady() || !provider.pushAvailability || !provider.pushRates || !provider.pushDerivedRates) {
-      return { calls: [], skipReason: 'The channel manager is not enabled or not configured on this platform.' };
-    }
     const job = await tx.syncJob.findUniqueOrThrow({
       where: { id: jobId },
       include: { connection: { include: { property: { select: { timezone: true, currency: true } } } } },
     });
     const c = job.connection;
+    // Each connection is served by its own channel manager (Zodomus, Beds24).
+    const provider: (ChannelProvider & Partial<ChannelSyncProvider>) | undefined = this.providers.get(c.provider);
+    if (!provider || !provider.isReady() || !provider.pushAvailability || !provider.pushRates || !provider.pushDerivedRates) {
+      return { calls: [], skipReason: 'The channel manager is not enabled or not configured on this platform.' };
+    }
     if (c.status !== 'ACTIVE') return { calls: [], skipReason: `Connection is ${c.status.toLowerCase()}, not active.` };
     const ref = { channelId: c.channelId, channelPropertyId: c.channelPropertyId };
     const ctx = { requestId: `sync:${job.id}` };
@@ -259,15 +295,16 @@ export class SyncWorker {
     const roomMapping = job.roomTypeId ? await tx.channelRoomMapping.findUnique({ where: { connectionId_roomTypeId: { connectionId: c.id, roomTypeId: job.roomTypeId } }, include: { rates: true } }) : null;
     if (!roomMapping) return { calls: [], skipReason: 'The room type is no longer mapped to this channel.' };
 
-    if (job.kind === 'AVAILABILITY') {
-      if (to <= from) return { calls: [], skipReason: null };
+    const availabilityCalls = async (): Promise<Call[]> => {
+      if (to <= from) return [];
       const dates = eachDate(from, to);
       const avail = await effectiveAvailability(tx, c.propertyId, roomMapping.roomTypeId, from, to);
       const segments = toSegments(dates, (d) => avail.get(d) ?? 0, (v) => String(v));
-      return {
-        calls: segments.map((s) => () => provider.pushAvailability!({ ...ref, channelRoomId: roomMapping.channelRoomId, dateFrom: s.dateFrom, dateTo: s.dateTo, available: s.value }, ctx)),
-        skipReason: null,
-      };
+      return segments.map((s) => () => provider.pushAvailability!({ ...ref, channelRoomId: roomMapping.channelRoomId, dateFrom: s.dateFrom, dateTo: s.dateTo, available: s.value }, ctx));
+    };
+
+    if (job.kind === 'AVAILABILITY') {
+      return { calls: await availabilityCalls(), skipReason: null };
     }
 
     const rateMapping = roomMapping.rates.find((r) => r.ratePlanId === job.ratePlanId);
@@ -310,16 +347,16 @@ export class SyncWorker {
       },
       (v) => JSON.stringify(v),
     );
-    return {
-      calls: segments.map(
-        (s) => () =>
-          provider.pushRates!(
-            { ...ref, channelRoomId: roomMapping.channelRoomId, channelRateId: rateMapping.channelRateId, currency, dateFrom: s.dateFrom, dateTo: s.dateTo, price: s.value.price, priceSingle: s.value.priceSingle, restrictions: s.value.restrictions },
-            ctx,
-          ),
-      ),
-      skipReason: null,
-    };
+    const rateCalls: Call[] = segments.map(
+      (s) => () =>
+        provider.pushRates!(
+          { ...ref, channelRoomId: roomMapping.channelRoomId, channelRateId: rateMapping.channelRateId, currency, dateFrom: s.dateFrom, dateTo: s.dateTo, price: s.value.price, priceSingle: s.value.priceSingle, restrictions: s.value.restrictions },
+          ctx,
+        ),
+    );
+    // Beds24: restriction changes can make it recompute availability, so the current availability follows at once.
+    const follow = provider.resendAvailabilityAfterRates && rateCalls.length ? await availabilityCalls() : [];
+    return { calls: [...rateCalls, ...follow], skipReason: null };
   }
 }
 
@@ -329,5 +366,20 @@ export async function enqueueAvailabilityResync(tx: Tx, organizationId: string, 
   const property = await tx.property.findUnique({ where: { id: propertyId }, select: { timezone: true } });
   if (!property) return 0;
   const from = todayIn(property.timezone);
+  // Fewer rooms in service can turn existing bookings into an overbooking.
+  await checkOverbooking(tx, organizationId, propertyId, roomTypeIds, from, addDays(from, horizonDays));
   return enqueueForChange(tx, { organizationId, propertyId, roomTypeIds, availability: true, rates: false, dateFrom: from, dateTo: addDays(from, horizonDays) });
+}
+
+/** Queues a failed job's target again (from today on). Returns false when the job cannot be retried. */
+export async function retryFailedJob(tx: Tx, jobId: string, requestedById: string): Promise<boolean> {
+  const job = await tx.syncJob.findUnique({ where: { id: jobId }, include: { connection: { select: { status: true, property: { select: { timezone: true } } } } } });
+  if (!job || job.status !== 'FAILED' || job.connection.status !== 'ACTIVE') return false;
+  const today = todayIn(job.connection.property.timezone);
+  const from = maxDate(fromDbDate(job.dateFrom), today);
+  let to = fromDbDate(job.dateTo);
+  if (job.kind === 'RATES_DERIVED') to = addDays(from, 1);
+  if (to <= from) return false;
+  await enqueueSync(tx, { organizationId: job.organizationId, connectionId: job.connectionId, kind: job.kind, roomTypeId: job.roomTypeId, ratePlanId: job.ratePlanId, dateFrom: from, dateTo: to, requestedById });
+  return true;
 }

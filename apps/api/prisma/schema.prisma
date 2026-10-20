@@ -135,6 +135,9 @@ model Organization {
   supportRequests SupportAccessRequest[]
   ratePlans      RatePlan[]
   channelConnections ChannelConnection[]
+  reservations   Reservation[]
+  discrepancies  Discrepancy[]
+  photos         Photo[]
 
   @@map("organizations")
 }
@@ -282,6 +285,9 @@ model Property {
   rooms        Room[]
   ratePlans    RatePlan[]
   channelConnections ChannelConnection[]
+  reservations Reservation[]
+  discrepancies Discrepancy[]
+  photos       Photo[]
 
   @@unique([organizationId, id])
   @@unique([organizationId, name])
@@ -339,6 +345,8 @@ model RoomType {
   inventoryDays InventoryDay[]
   rateDays     RateDay[]
   channelRoomMappings ChannelRoomMapping[]
+  reservationRooms ReservationRoom[]
+  photos       Photo[]
 
   @@unique([organizationId, id])
   @@unique([propertyId, id])
@@ -629,6 +637,12 @@ model ChannelConnection {
   activatedAt       DateTime?               @map("activated_at") @db.Timestamptz(3)
   /// Set when POST /rooms-activation succeeded (the property may still await confirmation).
   roomsActivatedAt  DateTime?               @map("rooms_activated_at") @db.Timestamptz(3)
+  /// Reservation queue polling (Milestone 6).
+  reservationsPolledAt DateTime?            @map("reservations_polled_at") @db.Timestamptz(3)
+  reservationsPollError String?             @map("reservations_poll_error") @db.VarChar(300)
+  reservationsPollFailures Int              @default(0) @map("reservations_poll_failures")
+  /// Set once GET /reservations-summary (bookings made before the connection) was imported.
+  summaryImportedAt DateTime?               @map("summary_imported_at") @db.Timestamptz(3)
   createdById       String?                 @map("created_by_id") @db.Uuid
   createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt         DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -637,6 +651,8 @@ model ChannelConnection {
   property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
   roomMappings ChannelRoomMapping[]
   syncJobs     SyncJob[]
+  reservations Reservation[]
+  discrepancies Discrepancy[]
 
   @@unique([organizationId, id])
   /// A channel property can be connected to only one StaySync property, platform-wide.
@@ -711,4 +727,205 @@ model SyncJob {
   @@index([status, nextAttemptAt])
   @@index([connectionId, createdAt])
   @@map("sync_jobs")
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 6: reservations, discrepancies
+// ---------------------------------------------------------------------------
+
+enum ReservationStatus {
+  CONFIRMED
+  MODIFIED
+  CANCELLED
+}
+
+enum DiscrepancyKind {
+  /// More rooms booked than rooms in service on a date.
+  OVERBOOKING
+  /// A reservation names a channel room that is not mapped to a room type (not deducted from availability).
+  UNMAPPED_ROOM
+  /// Required reservation data (dates, rooms) missing or in an unrecognised format (not deducted).
+  RESERVATION_INCOMPLETE
+  /// The reservation queue listed a booking that could not be retrieved.
+  RESERVATION_FETCH_FAILED
+  /// A modification or cancellation arrived for a booking StaySync never received.
+  UNKNOWN_RESERVATION
+  /// An availability or rate update could not be delivered.
+  SYNC_FAILED
+  /// The reservation queue could not be read repeatedly.
+  POLL_FAILED
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+/**
+ * A booking received from a channel. Guest personal data is stored only encrypted (AES-256-GCM,
+ * guest_enc) and shown only to members with booking.guest_pii.read. Card data is never requested or stored.
+ */
+model Reservation {
+  id                   String            @id @default(uuid(7)) @db.Uuid
+  organizationId       String            @map("organization_id") @db.Uuid
+  propertyId           String            @map("property_id") @db.Uuid
+  connectionId         String            @map("connection_id") @db.Uuid
+  provider             String            @db.VarChar(30)
+  environment          String            @db.VarChar(20)
+  channelId            Int               @map("channel_id")
+  channelName          String            @map("channel_name") @db.VarChar(60)
+  channelReservationId String            @map("channel_reservation_id") @db.VarChar(64)
+  status               ReservationStatus
+  /// Status value exactly as sent by the channel manager (for support).
+  channelStatus        String?           @map("channel_status") @db.VarChar(40)
+  /// Property-local arrival date.
+  checkIn              DateTime?         @map("check_in") @db.Date
+  /// Property-local departure date (exclusive: the last night is the day before).
+  checkOut             DateTime?         @map("check_out") @db.Date
+  currency             String?           @db.Char(3)
+  totalMinor           Int?              @map("total_minor")
+  guestCount           Int?              @map("guest_count") @db.SmallInt
+  roomCount            Int               @default(0) @map("room_count") @db.SmallInt
+  /// Encrypted JSON: guest name, contact details, remarks (never logged, never sent to platform admins).
+  guestEnc             String?           @map("guest_enc")
+  /// Encrypted, sanitized copy of the provider payload (a reservation can be retrieved only once).
+  payloadEnc           String?           @map("payload_enc")
+  needsReview          Boolean           @default(false) @map("needs_review")
+  reviewReason         String?           @map("review_reason") @db.VarChar(300)
+  /// QUEUE, SUMMARY (booked before the connection) or TEST (sandbox test reservation).
+  source               String            @db.VarChar(20)
+  /// Queue timestamp of the last change, as sent by the channel manager.
+  channelChangedAt     String?           @map("channel_changed_at") @db.VarChar(40)
+  receivedAt           DateTime          @default(now()) @map("received_at") @db.Timestamptz(3)
+  cancelledAt          DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  version              Int               @default(1)
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property          @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  connection   ChannelConnection @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Restrict)
+  rooms        ReservationRoom[]
+  discrepancies Discrepancy[]
+
+  @@unique([organizationId, id])
+  @@unique([connectionId, channelReservationId])
+  @@index([organizationId, propertyId, checkIn])
+  @@index([propertyId, status, checkIn, checkOut])
+  @@map("reservations")
+}
+
+/** One booked unit of a reservation. Deducted from the mapped room type's availability for each night. */
+model ReservationRoom {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  reservationId   String    @map("reservation_id") @db.Uuid
+  propertyId      String    @map("property_id") @db.Uuid
+  channelRoomId   String?   @map("channel_room_id") @db.VarChar(40)
+  channelRoomName String?   @map("channel_room_name") @db.VarChar(200)
+  channelRateId   String?   @map("channel_rate_id") @db.VarChar(40)
+  /// NULL when the channel room is not mapped (then nothing is deducted and a discrepancy is opened).
+  roomTypeId      String?   @map("room_type_id") @db.Uuid
+  ratePlanId      String?   @map("rate_plan_id") @db.Uuid
+  checkIn         DateTime? @map("check_in") @db.Date
+  checkOut        DateTime? @map("check_out") @db.Date
+  guestCount      Int?      @map("guest_count") @db.SmallInt
+  totalMinor      Int?      @map("total_minor")
+  mealPlan        String?   @map("meal_plan") @db.VarChar(200)
+  /// True while the reservation is not cancelled and the room has a mapped type and valid dates.
+  occupiesInventory Boolean @default(false) @map("occupies_inventory")
+
+  reservation Reservation @relation(fields: [organizationId, reservationId], references: [organizationId, id], onDelete: Cascade)
+  roomType    RoomType?   @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([reservationId])
+  @@index([roomTypeId, checkIn, checkOut])
+  @@map("reservation_rooms")
+}
+
+/** Something that needs a person's attention: an overbooking, an unmapped room, an undelivered update. */
+model Discrepancy {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  propertyId     String            @map("property_id") @db.Uuid
+  connectionId   String?           @map("connection_id") @db.Uuid
+  reservationId  String?           @map("reservation_id") @db.Uuid
+  syncJobId      String?           @map("sync_job_id") @db.Uuid
+  kind           DiscrepancyKind
+  /// high | medium | low
+  severity       String            @db.VarChar(10)
+  status         DiscrepancyStatus @default(OPEN)
+  message        String            @db.VarChar(300)
+  /// Non-personal details (dates, room type ids, counts, provider codes). Never guest data.
+  details        Json              @default("{}")
+  /// Identifies the same problem across detections; one OPEN row per key (partial unique index).
+  dedupeKey      String            @map("dedupe_key") @db.VarChar(200)
+  occurrences    Int               @default(1)
+  firstSeenAt    DateTime          @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt     DateTime          @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  resolvedAt     DateTime?         @map("resolved_at") @db.Timestamptz(3)
+  resolvedById   String?           @map("resolved_by_id") @db.Uuid
+  /// Set when StaySync detected that the problem is gone.
+  autoResolved   Boolean           @default(false) @map("auto_resolved")
+  resolutionNote String?           @map("resolution_note") @db.VarChar(500)
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property           @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  connection   ChannelConnection? @relation(fields: [organizationId, connectionId], references: [organizationId, id], onDelete: Restrict)
+  reservation  Reservation?       @relation(fields: [organizationId, reservationId], references: [organizationId, id], onDelete: Restrict)
+
+  @@index([organizationId, status, lastSeenAt(sort: Desc)])
+  @@index([propertyId, status])
+  @@map("discrepancies")
+}
+
+// ---------------------------------------------------------------------------
+// Photos (property and room type). Files are re-encoded and stored outside the database.
+// ---------------------------------------------------------------------------
+
+model Photo {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  propertyId     String   @map("property_id") @db.Uuid
+  /// NULL = a property photo; otherwise a photo of this room type.
+  roomTypeId     String?  @map("room_type_id") @db.Uuid
+  /// Random storage key (never derived from the uploaded file name).
+  storageKey     String   @unique @map("storage_key") @db.VarChar(120)
+  contentType    String   @map("content_type") @db.VarChar(40)
+  width          Int
+  height         Int
+  bytes          Int
+  /// SHA-256 of the stored (re-encoded) file; also used to detect duplicate uploads.
+  sha256         String   @db.Char(64)
+  caption        String?  @db.VarChar(200)
+  isMain         Boolean  @default(false) @map("is_main")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdById    String?  @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  property     Property     @relation(fields: [organizationId, propertyId], references: [organizationId, id], onDelete: Restrict)
+  roomType     RoomType?    @relation(fields: [propertyId, roomTypeId], references: [propertyId, id], onDelete: Restrict)
+
+  @@index([organizationId, propertyId, roomTypeId, sortOrder])
+  @@map("photos")
+}
+
+/** Liveness of background workers (sync sender, reservation poller). Platform data, no tenant rows. */
+model WorkerHeartbeat {
+  /// hostname:pid of the process.
+  id          String   @id @db.VarChar(120)
+  /// "worker" (separate process) or "api" (workers embedded in the API process).
+  role        String   @db.VarChar(20)
+  version     String   @db.VarChar(40)
+  startedAt   DateTime @map("started_at") @db.Timestamptz(3)
+  lastSeenAt  DateTime @map("last_seen_at") @db.Timestamptz(3)
+  /// Counters and timestamps since start (no tenant data).
+  stats       Json     @default("{}")
+
+  @@index([lastSeenAt])
+  @@map("worker_heartbeats")
 }

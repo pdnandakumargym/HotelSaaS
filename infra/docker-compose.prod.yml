@@ -1,0 +1,142 @@
+# StaySync production stack on one server (Docker Engine + Compose v2).
+#   cp infra/.env.production.example infra/.env.production   # fill in every value
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.production up -d --build
+# Only Caddy publishes ports (80/443). PostgreSQL, the API and the worker are on the internal network only.
+name: staysync-prod
+
+x-api-env: &api-env
+  NODE_ENV: production
+  APP_NAME: ${APP_NAME:-StaySync}
+  HOST: 0.0.0.0
+  PORT: "3000"
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgresql://staysync_app:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-staysync}
+  APP_BASE_URL: https://${DOMAIN}
+  CORS_ORIGINS: https://${DOMAIN}
+  TRUST_PROXY: "1"
+  COOKIE_SECURE: "true"
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY}
+  OWNER_2FA_POLICY: ${OWNER_2FA_POLICY:-required}
+  MAIL_TRANSPORT: smtp
+  MAIL_FROM: ${MAIL_FROM}
+  SMTP_HOST: ${SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER}
+  SMTP_PASSWORD: ${SMTP_PASSWORD}
+  ZODOMUS_ENABLED: ${ZODOMUS_ENABLED:-false}
+  ZODOMUS_ENVIRONMENT: ${ZODOMUS_ENVIRONMENT:-production}
+  ZODOMUS_API_USERNAME: ${ZODOMUS_API_USERNAME:-}
+  ZODOMUS_API_PASSWORD: ${ZODOMUS_API_PASSWORD:-}
+  ZODOMUS_ALLOW_PRODUCTION_WRITES: ${ZODOMUS_ALLOW_PRODUCTION_WRITES:-false}
+  BEDS24_ENABLED: ${BEDS24_ENABLED:-false}
+  BEDS24_REFRESH_TOKEN: ${BEDS24_REFRESH_TOKEN:-}
+  BEDS24_ALLOW_WRITES: ${BEDS24_ALLOW_WRITES:-false}
+  BEDS24_CALENDAR_TO_INCLUSIVE: ${BEDS24_CALENDAR_TO_INCLUSIVE:-}
+  PUBLIC_MEDIA_BASE_URL: https://${DOMAIN}
+  RESERVATION_POLL_INTERVAL_MS: ${RESERVATION_POLL_INTERVAL_MS:-60000}
+  GUEST_DATA_RETENTION_DAYS: ${GUEST_DATA_RETENTION_DAYS:-0}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: staysync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-staysync}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-prod:/docker-entrypoint-initdb.d:ro
+      - ./postgres/app-role.sql:/staysync/app-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U staysync -d ${POSTGRES_DB:-staysync}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [internal]
+
+  # Applies pending migrations as the schema owner, then exits.
+  migrate:
+    build: { context: .., dockerfile: infra/docker/api.Dockerfile, target: migrate }
+    environment:
+      DATABASE_URL: postgresql://staysync:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-staysync}
+      MIGRATION_DATABASE_URL: postgresql://staysync:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-staysync}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [internal, egress]
+
+  api:
+    build: { context: .., dockerfile: infra/docker/api.Dockerfile, target: runtime }
+    image: staysync-api:latest
+    restart: unless-stopped
+    environment:
+      <<: *api-env
+      # Background loops run in the separate "worker" service.
+      SYNC_WORKER_ENABLED: "false"
+    volumes:
+      - photos:/app/apps/api/storage/photos
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [internal, egress]
+
+  worker:
+    image: staysync-api:latest
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *api-env
+      SYNC_WORKER_ENABLED: "true"
+    healthcheck:
+      disable: true
+    depends_on:
+      api: { condition: service_started }
+    networks: [internal, egress]
+
+  web:
+    build: { context: .., dockerfile: infra/docker/web.Dockerfile }
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks: [internal, egress]
+
+  # Nightly compressed database dump, kept for BACKUP_KEEP_DAYS (default 14). Copy ./backups off the server too.
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+      - ./postgres/backup.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "-c", "while true; do /bin/sh /backup.sh; sleep 86400; done"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+volumes:
+  pgdata:
+  photos:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    internal: true
+  egress: {}

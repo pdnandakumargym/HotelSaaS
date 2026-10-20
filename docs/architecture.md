@@ -357,11 +357,44 @@ Connect wizard: POST /property-activation → GET /room-rates (cached) → mappi
 ```
 
 - Calendar dates are property-local `YYYY-MM-DD` (`date` columns); `dateTo` is exclusive everywhere, as in Zodomus.
-- Effective availability = rooms of the type in service, lowered by an override, 0 on stop-sell (bookings from Milestone 6).
+- Effective availability = max(0, min(rooms to sell, rooms in service) − rooms booked), 0 on stop-sell.
 - Money is stored in minor units of the property currency and sent as decimal strings (`"4500.00"`).
 - Room changes (add, delete, out of service) queue an availability resync; mapped room types/rate plans cannot be deleted.
 - New tables (all tenant-owned, FORCE RLS): `rate_plans`, `inventory_days`, `rate_days`, `channel_connections`, `channel_room_mappings`,
   `channel_rate_mappings`, `sync_jobs`.
+
+## Reservations and discrepancies (Milestone 6)
+
+```text
+ReservationService poller (every 60 s; per-connection lock) ─> GET /reservations-queue
+  └─ latest entry per booking, skip if already processed ─> GET /reservations?reservationId ─> parse (zodomus.reservations.ts)
+       └─ one tenant transaction: upsert reservation + reservation_rooms (guest_enc / payload_enc AES-256-GCM)
+            ├─ enqueueForChange(availability, released + booked nights) ─> sync_jobs ─> SyncWorker ─> POST /availability
+            ├─ checkOverbooking ─> discrepancies (OVERBOOKING, auto-resolve)
+            └─ UNMAPPED_ROOM / RESERVATION_INCOMPLETE / UNKNOWN_RESERVATION / fetch failures ─> discrepancies
+First poll per connection: GET /reservations-summary (bookings made before connecting), once.
+Sandbox only: POST /reservations-createtest, then poll.
+SyncWorker FAILED job ─> SYNC_FAILED discrepancy; later SUCCEEDED job for the same target ─> auto-resolved.
+```
+
+- A reservation room occupies inventory only when the booking is not cancelled, its channel room is mapped and its dates are valid
+  (`occupies_inventory`, enforced by a CHECK). Booked nights = `check_in <= night < check_out`.
+- Guest data (names, contact details, remarks) is stored only encrypted, bound to organization, connection and booking number
+  (associated data). It is decrypted only for members with `booking.guest_pii.read`; viewing a booking's guest details is
+  audited (`reservation.guest_viewed`). Platform support never receives guest data, even under an approved grant.
+- Discrepancies carry a dedupe key with a partial unique index (one OPEN row per problem); repeats increase `occurrences`.
+- New tables (tenant-owned, FORCE RLS): `reservations`, `reservation_rooms`, `discrepancies`; connection columns for polling state.
+
+## Reports, promotions, operations (Milestone 7)
+
+- **Reports** are computed from stored reservations on request (no provider calls): one SQL pass over
+  `generate_series(nights) × reservation_rooms`, grouped by night, room type and channel; revenue is each room's total spread
+  evenly over its nights; only bookings in the property currency count.
+- **Promotions** are read and switched through Zodomus (`GET /promotions`, `POST /activate-promotion`, `POST /deactivate-promotion`);
+  nothing is stored.
+- **Processes**: `dist/main.js` (API) and `dist/worker.js` (sync sender, reservation poller, retention purge). Each writes a
+  heartbeat to `worker_heartbeats` every 30 s; the admin System Health page shows them.
+- **Deployment**: see [deployment.md](deployment.md); threat model in [security.md](security.md).
 
 ## Plans and limits (Milestone 3)
 

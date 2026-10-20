@@ -2,20 +2,20 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { errorMessage } from '../../../core/api/error-message';
-import { Amenity, OrgApi, Property } from '../../../core/api/org-api.service';
+import { Amenity, OrgApi, Property, RoomType } from '../../../core/api/org-api.service';
 import { AuthService } from '../../../core/auth/auth.service';
 import { AmenityPicker } from '../../../shared/ui/amenity-picker/amenity-picker';
-import { StatusPill } from '../../../shared/ui/status-pill/status-pill';
+import { PhotoGallery } from '../../../shared/ui/photo-gallery/photo-gallery';
 
 @Component({
   selector: 'ss-amenities-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, RouterLink, AmenityPicker, StatusPill],
+  imports: [FormsModule, RouterLink, AmenityPicker, PhotoGallery],
   template: `
     <header class="ss-page-head">
       <div>
         <h1>Photos &amp; amenities</h1>
-        <p class="ss-muted">Amenities guests see on booking channels. Room-level amenities are set per room type.</p>
+        <p class="ss-muted">Photos and amenities of your property and room types. Room-level amenities are set per room type.</p>
       </div>
       @if (properties().length > 1) {
         <select class="ss-input pick" [ngModel]="selectedId()" (ngModelChange)="select($event)" aria-label="Property">
@@ -26,21 +26,26 @@ import { StatusPill } from '../../../shared/ui/status-pill/status-pill';
     @if (message(); as m) {
       <p class="ss-alert" [class.ss-alert--success]="m.tone === 'success'" [class.ss-alert--error]="m.tone === 'error'" role="status">{{ m.text }}</p>
     }
-    @if (selectedId()) {
+    @if (selectedId(); as id) {
       <section class="ss-card">
         <h2 class="ss-card__title">Property amenities</h2>
         <ss-amenity-picker [amenities]="amenities()" scope="property" [(selected)]="selected" [disabled]="!canWrite()" />
         @if (canWrite()) { <button type="button" class="ss-btn" (click)="save()" [disabled]="busy()">Save amenities</button> }
       </section>
       <section class="ss-card">
-        <h2 class="ss-card__title">Photos <ss-status-pill tone="info">Planned · Milestone 7</ss-status-pill></h2>
-        <p class="ss-muted">Photo upload needs secure object storage (size and type checks, image re-encoding, private buckets). It arrives with the deployment work in Milestone 7. No photos are stored yet.</p>
+        <h2 class="ss-card__title">Photos</h2>
+        <ss-photo-gallery [propertyId]="id" [roomTypes]="roomTypes()" [canWrite]="canWrite()" />
+        <p class="ss-alert ss-alert--info booking">
+          <strong>Booking.com:</strong> photos are kept in StaySync for now. Zodomus's photo call (<code>POST /property</code>) does not document how to
+          update an existing Booking.com property, so StaySync does not send photos yet (a wrong call could create a new property).
+          For the Booking.com review, add photos in the Booking.com extranet.
+        </p>
       </section>
     } @else if (loaded()) {
       <section class="ss-card"><p class="ss-muted">Add a property first. <a routerLink="/app/properties/new">Add property</a></p></section>
     }
   `,
-  styles: `.pick { max-width: 260px; } section.ss-card { margin-bottom: 16px; } .ss-btn { margin-top: 8px; }`,
+  styles: `.pick { max-width: 260px; } section.ss-card { margin-bottom: 16px; } .ss-btn { margin-top: 8px; } .booking { margin-top: 12px; font-size: 13px; }`,
 })
 export class AmenitiesPage implements OnInit {
   private readonly api = inject(OrgApi);
@@ -49,6 +54,7 @@ export class AmenitiesPage implements OnInit {
   protected readonly amenities = signal<Amenity[]>([]);
   protected readonly selectedId = signal<string | null>(null);
   protected readonly selected = signal<string[]>([]);
+  protected readonly roomTypes = signal<RoomType[]>([]);
   protected readonly loaded = signal(false);
   protected readonly busy = signal(false);
   protected readonly message = signal<{ tone: 'success' | 'error'; text: string } | null>(null);
@@ -69,6 +75,8 @@ export class AmenitiesPage implements OnInit {
   protected select(id: string): void {
     this.selectedId.set(id);
     this.selected.set(this.properties().find((p) => p.id === id)?.amenities ?? []);
+    this.roomTypes.set([]);
+    this.api.roomTypes(id).subscribe({ next: (t) => this.roomTypes.set(t.filter((x) => x.status === 'ACTIVE')), error: () => this.roomTypes.set([]) });
   }
 
   protected save(): void {

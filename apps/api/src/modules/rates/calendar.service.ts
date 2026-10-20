@@ -3,21 +3,56 @@ import { AppError } from '../../shared/errors.js';
 import { addDays, currencyDigits, eachDate, fromDbDate, toDbDate, toMinor, weekday } from './dates.js';
 
 /**
- * Units a channel may sell per date for one room type:
- * rooms of the type that are in service, optionally lowered by an owner override, 0 on stop-sell.
- * Overrides above the number of rooms are capped (StaySync never sells rooms that do not exist).
- * Reservations are deducted from Milestone 6 on.
+ * Rooms booked per night for one room type in [from, to): reservation rooms that occupy inventory
+ * (not cancelled, mapped, valid dates) with check-in on or before the night and check-out after it.
  */
+export async function bookedNights(tx: Tx, roomTypeId: string, from: string, to: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (to <= from) return out;
+  const rows = await tx.$queryRaw<{ d: Date; n: number }[]>`
+    SELECT g.d::date AS d, count(rr.id)::int AS n
+    FROM generate_series(${toDbDate(from)}::date, ${toDbDate(to)}::date - 1, interval '1 day') AS g(d)
+    JOIN reservation_rooms rr ON rr.room_type_id = ${roomTypeId}::uuid AND rr.occupies_inventory
+      AND rr.check_in <= g.d::date AND rr.check_out > g.d::date
+    GROUP BY g.d`;
+  for (const r of rows) out.set(fromDbDate(r.d), r.n);
+  return out;
+}
+
+/** Booked rooms per room type and night for a whole property (calendar view). Key: `${roomTypeId}|${date}`. */
+async function bookedForProperty(tx: Tx, propertyId: string, from: string, to: string): Promise<Map<string, number>> {
+  const rows = await tx.$queryRaw<{ rt: string; d: Date; n: number }[]>`
+    SELECT rr.room_type_id::text AS rt, g.d::date AS d, count(rr.id)::int AS n
+    FROM generate_series(${toDbDate(from)}::date, ${toDbDate(to)}::date - 1, interval '1 day') AS g(d)
+    JOIN reservation_rooms rr ON rr.property_id = ${propertyId}::uuid AND rr.occupies_inventory
+      AND rr.check_in <= g.d::date AND rr.check_out > g.d::date
+    GROUP BY rr.room_type_id, g.d`;
+  return new Map(rows.map((r) => [`${r.rt}|${fromDbDate(r.d)}`, r.n]));
+}
+
+/**
+ * Units a channel may sell per date for one room type:
+ *   0 on stop-sell, otherwise max(0, min(rooms to sell, rooms in service) − rooms booked).
+ * "Rooms to sell" (the owner's override) defaults to the rooms in service and is the total allotment for
+ * the date; bookings from every channel are subtracted from it, so StaySync never offers rooms that do not exist.
+ */
+export function sellable(inService: number, override: number | null | undefined, stopSell: boolean | undefined, booked: number): number {
+  if (stopSell) return 0;
+  const allotment = override !== null && override !== undefined ? Math.min(override, inService) : inService;
+  return Math.max(0, allotment - booked);
+}
+
 export async function effectiveAvailability(tx: Tx, propertyId: string, roomTypeId: string, from: string, to: string): Promise<Map<string, number>> {
-  const [inService, rows] = await Promise.all([
+  const [inService, rows, booked] = await Promise.all([
     tx.room.count({ where: { propertyId, roomTypeId, status: 'AVAILABLE' } }),
     tx.inventoryDay.findMany({ where: { roomTypeId, date: { gte: toDbDate(from), lt: toDbDate(to) } } }),
+    bookedNights(tx, roomTypeId, from, to),
   ]);
   const byDate = new Map(rows.map((r) => [fromDbDate(r.date), r]));
   const out = new Map<string, number>();
   for (const d of eachDate(from, to)) {
     const r = byDate.get(d);
-    out.set(d, r?.stopSell ? 0 : r?.available !== null && r?.available !== undefined ? Math.min(r.available, inService) : inService);
+    out.set(d, sellable(inService, r?.available, r?.stopSell, booked.get(d) ?? 0));
   }
   return out;
 }
@@ -26,7 +61,7 @@ export async function getCalendar(tx: Tx, propertyId: string, from: string, days
   const to = addDays(from, days);
   const property = await tx.property.findUnique({ where: { id: propertyId }, select: { id: true, currency: true, timezone: true } });
   if (!property) throw new AppError(404, 'NOT_FOUND', 'Property not found');
-  const [roomTypes, ratePlans, inventory, rates] = await Promise.all([
+  const [roomTypes, ratePlans, inventory, rates, booked] = await Promise.all([
     tx.roomType.findMany({
       where: { propertyId, status: 'ACTIVE' },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -35,6 +70,7 @@ export async function getCalendar(tx: Tx, propertyId: string, from: string, days
     tx.ratePlan.findMany({ where: { propertyId, status: 'ACTIVE' }, orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }], select: { id: true, name: true, code: true } }),
     tx.inventoryDay.findMany({ where: { propertyId, date: { gte: toDbDate(from), lt: toDbDate(to) } } }),
     tx.rateDay.findMany({ where: { propertyId, date: { gte: toDbDate(from), lt: toDbDate(to) } } }),
+    bookedForProperty(tx, propertyId, from, to),
   ]);
   const dates = eachDate(from, to);
   const scale = 10 ** currencyDigits(property.currency);
@@ -60,7 +96,8 @@ export async function getCalendar(tx: Tx, propertyId: string, from: string, days
         days: dates.map((d) => {
           const r = inv.get(`${rt.id}|${d}`);
           const override = r?.available ?? null;
-          return { date: d, override, stopSell: r?.stopSell ?? false, available: r?.stopSell ? 0 : override !== null ? Math.min(override, inService) : inService };
+          const b = booked.get(`${rt.id}|${d}`) ?? 0;
+          return { date: d, override, stopSell: r?.stopSell ?? false, booked: b, available: sellable(inService, override, r?.stopSell, b) };
         }),
         rates: ratePlans.map((rp) => ({
           ratePlanId: rp.id,

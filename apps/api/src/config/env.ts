@@ -144,11 +144,39 @@ const envSchema = z
     ZODOMUS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(15000),
     /** Production inventory changes need an explicit opt-in. Sandbox writes are always allowed when Zodomus is enabled. */
     ZODOMUS_ALLOW_PRODUCTION_WRITES: booleanString.default(false),
+    /** Beds24 API v2 (second channel manager). Beds24 has no sandbox: every account is live. */
+    BEDS24_ENABLED: booleanString.default(false),
+    BEDS24_BASE_URL: z
+      .url({ error: 'BEDS24_BASE_URL must be a URL' })
+      .refine((v) => v.startsWith('https://'), 'BEDS24_BASE_URL must use https')
+      .default('https://beds24.com/api/v2'),
+    /** Long-life refresh token (created once with `npm run beds24:setup`). Server-side only. */
+    BEDS24_REFRESH_TOKEN: z.string().optional(),
+    BEDS24_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(15000),
+    /** Calendar writes change live Beds24 inventory (and every OTA connected there): explicit opt-in. */
+    BEDS24_ALLOW_WRITES: booleanString.default(false),
+    /**
+     * Whether Beds24 treats the calendar `to` date as included. The API reference does not say; confirm with
+     * `npm run beds24:check` and set it. Calendar writes are refused while it is not set.
+     */
+    BEDS24_CALENDAR_TO_INCLUSIVE: z.preprocess((v) => (v === '' ? undefined : v), booleanString.optional()),
     /** Background worker that sends queued availability/rate updates. Off in tests (they run it explicitly). */
     SYNC_WORKER_ENABLED: booleanString.optional(),
     SYNC_WORKER_INTERVAL_MS: z.coerce.number().int().min(1000).max(600000).default(5000),
     /** How far ahead a full sync sends availability and rates (channels recommend one year). */
     SYNC_HORIZON_DAYS: z.coerce.number().int().min(30).max(400).default(365),
+    /** How often active channel connections are polled for new, modified or cancelled reservations. */
+    RESERVATION_POLL_INTERVAL_MS: z.coerce.number().int().min(10000).max(3600000).default(60000),
+    /** Folder for re-encoded photo files (created if missing). Relative paths are resolved from the API's working directory. */
+    /** Erase guest personal data this many days after check-out (0 = keep). Booking facts are kept. */
+    GUEST_DATA_RETENTION_DAYS: z.coerce.number().int().min(0).max(3650).default(0),
+    PHOTO_STORAGE_DIR: z.string().trim().min(1).default('storage/photos'),
+    PHOTO_MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(25).default(10),
+    /**
+     * Public HTTPS address of this API, used for signed photo links that channels (Booking.com) download.
+     * Required to send photos to a channel in production. Example: https://api.example.com
+     */
+    PUBLIC_MEDIA_BASE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.url().optional()),
   })
   .superRefine((env, ctx) => {
     const isProd = env.NODE_ENV === 'production';
@@ -196,6 +224,12 @@ const envSchema = z
           message: 'sandbox Zodomus configuration is not allowed when NODE_ENV=production',
         });
       }
+    }
+    if (env.BEDS24_ENABLED && !env.BEDS24_REFRESH_TOKEN?.trim()) {
+      ctx.addIssue({ code: 'custom', path: ['BEDS24_REFRESH_TOKEN'], message: 'required when BEDS24_ENABLED=true (create one with npm run beds24:setup)' });
+    }
+    if (env.BEDS24_ENABLED && env.NODE_ENV === 'test') {
+      ctx.addIssue({ code: 'custom', path: ['BEDS24_ENABLED'], message: 'Beds24 accounts are live; it cannot be enabled when NODE_ENV=test' });
     }
     if (!isProd && env.ZODOMUS_ENVIRONMENT === 'production') {
       ctx.addIssue({
@@ -253,7 +287,25 @@ export interface AppConfig {
     readonly password: string | undefined;
     readonly allowProductionWrites: boolean;
   };
+  readonly beds24: {
+    readonly enabled: boolean;
+    readonly baseUrl: string;
+    readonly timeoutMs: number;
+    readonly credentialsConfigured: boolean;
+    readonly refreshToken: string | undefined;
+    readonly allowWrites: boolean;
+    /** null = not confirmed yet (calendar writes refused). */
+    readonly calendarToInclusive: boolean | null;
+  };
+  readonly photos: {
+    readonly storageDir: string;
+    readonly maxUploadBytes: number;
+    readonly publicBaseUrl: string | undefined;
+  };
   readonly sync: {
+    /** Reservation queue polling interval (the poller runs when workerEnabled). */
+    readonly reservationPollMs: number;
+    readonly guestDataRetentionDays: number;
     readonly workerEnabled: boolean;
     readonly intervalMs: number;
     readonly horizonDays: number;
@@ -326,10 +378,26 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       password: env.ZODOMUS_API_PASSWORD,
       allowProductionWrites: env.ZODOMUS_ALLOW_PRODUCTION_WRITES,
     }),
+    beds24: Object.freeze({
+      enabled: env.BEDS24_ENABLED,
+      baseUrl: env.BEDS24_BASE_URL.replace(/\/+$/, ''),
+      timeoutMs: env.BEDS24_TIMEOUT_MS,
+      credentialsConfigured: Boolean(env.BEDS24_REFRESH_TOKEN?.trim()),
+      refreshToken: env.BEDS24_REFRESH_TOKEN?.trim(),
+      allowWrites: env.BEDS24_ALLOW_WRITES,
+      calendarToInclusive: env.BEDS24_CALENDAR_TO_INCLUSIVE ?? null,
+    }),
+    photos: Object.freeze({
+      storageDir: env.PHOTO_STORAGE_DIR,
+      maxUploadBytes: env.PHOTO_MAX_UPLOAD_MB * 1024 * 1024,
+      publicBaseUrl: env.PUBLIC_MEDIA_BASE_URL?.replace(/\/+$/, ''),
+    }),
     sync: Object.freeze({
       workerEnabled: env.SYNC_WORKER_ENABLED ?? env.NODE_ENV !== 'test',
       intervalMs: env.SYNC_WORKER_INTERVAL_MS,
       horizonDays: env.SYNC_HORIZON_DAYS,
+      reservationPollMs: env.RESERVATION_POLL_INTERVAL_MS,
+      guestDataRetentionDays: env.GUEST_DATA_RETENTION_DAYS,
     }),
   });
 }

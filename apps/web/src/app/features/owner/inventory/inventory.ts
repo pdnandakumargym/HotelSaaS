@@ -56,8 +56,8 @@ type Tri = '' | 'yes' | 'no';
                   <tr class="rt">
                     <th scope="row" class="sticky">{{ rt.name }} <small class="ss-muted">{{ rt.roomsInService }} in service</small></th>
                     @for (d of rt.days; track d.date) {
-                      <td [class.zero]="d.available === 0" [class.override]="d.override !== null || d.stopSell" [attr.title]="d.stopSell ? 'Stop-sell' : d.override !== null ? 'Set to ' + d.override : 'Default'">
-                        {{ d.stopSell ? 'Stop' : d.available }}
+                      <td [class.zero]="d.available === 0" [class.override]="d.override !== null || d.stopSell" [attr.title]="cellTitle(d)">
+                        {{ d.stopSell ? 'Stop' : d.available }}@if (d.booked) { <small class="booked">{{ d.booked }} booked</small> }
                       </td>
                     }
                   </tr>
@@ -73,7 +73,7 @@ type Tri = '' | 'yes' | 'no';
               </tbody>
             </table>
           </div>
-          <p class="ss-muted small">"—" = no price set: nothing is sent to channels for that date. Availability is capped at the rooms in service.</p>
+          <p class="ss-muted small">"—" = no price set: nothing is sent to channels for that date. Availability is capped at the rooms in service, and bookings from channels are subtracted from it.</p>
         </section>
 
         @if (canInventory() || canRates()) {
@@ -159,6 +159,7 @@ type Tri = '' | 'yes' | 'no';
     .grid tr.rt td { font-weight: 600; }
     .grid td.override { background: var(--ss-blue-50); }
     .grid td.zero { color: var(--ss-red-600); }
+    .grid td .booked { display: block; font-size: 10.5px; color: var(--ss-text-muted); white-space: nowrap; }
     .grid td.closed { text-decoration: line-through; color: var(--ss-text-muted); }
     section.ss-card { margin-bottom: 16px; }
     .bulk { display: grid; gap: 16px; }
@@ -308,5 +309,10 @@ export class Inventory {
       },
       error: (e: unknown) => this.error.set(errorMessage(e)),
     });
+  }
+
+  protected cellTitle(d: { stopSell: boolean; override: number | null; booked: number; available: number }): string {
+    const base = d.stopSell ? 'Stop-sell' : d.override !== null ? `Rooms to sell set to ${d.override}` : 'Default (rooms in service)';
+    return d.booked ? `${base} · ${d.booked} booked · ${d.available} left to sell` : base;
   }
 }

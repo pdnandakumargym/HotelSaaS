@@ -20,6 +20,9 @@ for (const [method, path, summary, tag] of [
   ['get', '/admin/integrations/zodomus/calls', 'Recent outbound calls (metadata only)', 'Admin'],
   ['get', '/admin/integrations/zodomus/reference/{kind}', 'Cached read-only reference data (account, channels, currencies, price_models)', 'Admin'],
   ['post', '/admin/integrations/zodomus/reference/{kind}/refresh', 'Fetch reference data from Zodomus and cache it (sanitized)', 'Admin'],
+  ['get', '/admin/integrations/beds24', 'Beds24 configuration status, API health and credit budget (no secrets)', 'Admin'],
+  ['post', '/admin/integrations/beds24/test', 'Test Connection: GET /authentication/details', 'Admin'],
+  ['get', '/admin/integrations/beds24/calls', 'Recent Beds24 calls (metadata only)', 'Admin'],
   ['get', '/organizations/{orgId}/channels', 'Channel availability for an organization (no fabricated connections)', 'Channels'],
 ] as const) {
   registry.registerPath({ method, path: `/api/v1${path}`, tags: [tag], summary, responses: { 200: { description: 'OK' }, 409: { description: 'Integration not configured' } } });
@@ -51,6 +54,24 @@ export function adminIntegrationsRouter(integrations: IntegrationService): Route
   // Read-only provider calls, but they spend the platform's Zodomus quota and are audited.
   r.post('/zodomus/test', requirePlatformPermission('admin.integration.manage'), async (req, res) => {
     sendData(res, await integrations.testConnection(req.auth!.user, requestMeta(req)));
+  });
+
+  // Beds24 (second channel manager): status, Test connection (GET /authentication/details), recent calls.
+  const beds24 = () => {
+    const s = integrations.for('beds24');
+    if (!s) throw new AppError(404, 'NOT_FOUND', 'Beds24 is not available in this build');
+    return s;
+  };
+  r.get('/beds24', async (_req, res) => {
+    const s = beds24();
+    sendData(res, { config: s.configStatus(), health: await s.health(), details: s.details() });
+  });
+  r.get('/beds24/calls', async (req, res) => {
+    const { limit } = parseQuery(z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }), req);
+    sendData(res, await beds24().recentCalls(limit));
+  });
+  r.post('/beds24/test', requirePlatformPermission('admin.integration.manage'), async (req, res) => {
+    sendData(res, await beds24().testConnection(req.auth!.user, requestMeta(req)));
   });
 
   r.post('/zodomus/reference/:kind/refresh', requirePlatformPermission('admin.integration.manage'), async (req, res) => {
@@ -128,6 +149,8 @@ const CreateConnectionBody = z
       .trim()
       .regex(/^[A-Za-z0-9_-]{1,40}$/, 'Use the property id exactly as shown by the channel (letters, digits, - or _)'),
     priceModelId: z.number().int().min(1).max(4),
+    /** Channel manager; Zodomus when omitted (unchanged behaviour). */
+    provider: z.enum(['zodomus', 'beds24']).optional(),
   })
   .strict();
 const MappingBody = z

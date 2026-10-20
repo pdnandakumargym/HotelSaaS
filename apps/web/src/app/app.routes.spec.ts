@@ -73,10 +73,10 @@ describe('routing and guards', () => {
     expect(url()).toBe('/app/dashboard');
   });
 
-  it('shows an honest placeholder for planned modules', async () => {
-    setAuth(OWNER_ME);
-    await harness.navigateByUrl('/app/bookings');
-    expect(text()).toContain('Planned · Milestone 6');
+  it('has no planned placeholder pages left (all modules delivered)', async () => {
+    const { OWNER_NAV } = await import('./core/navigation/owner-nav');
+    const { ADMIN_NAV } = await import('./core/navigation/admin-nav');
+    expect([...OWNER_NAV, ...ADMIN_NAV].filter((i) => i.status === 'planned')).toEqual([]);
   });
 
   it('shows not found for unknown URLs', async () => {

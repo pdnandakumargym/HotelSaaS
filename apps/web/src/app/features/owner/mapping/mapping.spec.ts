@@ -71,4 +71,44 @@ describe('Booking.com mapping page', () => {
     expect(el.textContent).toContain('Ask an owner or manager');
     expect(el.querySelector('form')).toBeNull();
   });
+
+  it('lets the owner choose Beds24 and sends the provider with the connection', async () => {
+    const { fixture, http, el } = setup();
+    const withBeds24 = {
+      data: {
+        ...OPTIONS.data,
+        providers: [
+          { id: 'zodomus', displayName: 'Zodomus', ready: true, environment: 'sandbox', channels: OPTIONS.data.channels },
+          { id: 'beds24', displayName: 'Beds24', ready: true, environment: 'production', channels: [{ channelId: 1, name: 'Beds24', priceModels: [{ id: 1, name: 'Beds24 calendar prices', recommended: true }] }] },
+        ],
+      },
+    };
+    http.expectOne(`${ORG}/channel-options`).flush(withBeds24);
+    http.expectOne(`${P}/channel-connections`).flush({ data: [] });
+    http.expectOne(`${P}/room-types`).flush({ data: [{ id: 'rt1', name: 'Deluxe', status: 'ACTIVE', roomCount: 3 }] });
+    http.expectOne(`${P}/rate-plans`).flush({ data: [{ id: 'rp1', name: 'Standard', code: 'STD', status: 'ACTIVE' }] });
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.textContent).toContain('Connect to Booking.com');
+    const cmp = fixture.componentInstance as unknown as { chooseProvider(id: string): void; channelPropertyId: string; connect(ch: unknown): void };
+    cmp.chooseProvider('beds24');
+    fixture.detectChanges();
+    expect(el.textContent).toContain('Connect to Beds24');
+    expect(el.textContent).toContain('Beds24 property ID');
+    expect(el.textContent).toContain('paid Beds24 account');
+    cmp.channelPropertyId = '12345';
+    cmp.connect(withBeds24.data.providers[1]!.channels[0]);
+    const req = http.expectOne(`${P}/channel-connections`);
+    expect(req.request.body).toEqual({ channelId: 1, channelPropertyId: '12345', priceModelId: 1, provider: 'beds24' });
+  });
+
+  it('keeps the Zodomus request unchanged (no provider field)', async () => {
+    const { fixture, http } = setup();
+    flushBase(http, []);
+    await fixture.whenStable();
+    const cmp = fixture.componentInstance as unknown as { channelPropertyId: string; connect(ch: unknown): void };
+    cmp.channelPropertyId = '555';
+    cmp.connect(OPTIONS.data.channels[0]);
+    expect(http.expectOne(`${P}/channel-connections`).request.body).toEqual({ channelId: 1, channelPropertyId: '555', priceModelId: 2 });
+  });
 });

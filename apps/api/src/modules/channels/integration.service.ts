@@ -4,6 +4,7 @@ import { withSystem } from '../../infrastructure/db/tenant.js';
 import { AppError } from '../../shared/errors.js';
 import type { AuditService } from '../audit/audit.service.js';
 import type { RequestMeta } from '../auth/auth.service.js';
+import type { ProviderRegistry } from './provider-registry.js';
 import type { CallRecord, CallRecorder, ChannelProvider, ProviderCallResult, ReferenceKind } from './channel-provider.js';
 import { countItems, sanitizePayload } from './sanitize.js';
 import { normalizeReference } from './zodomus/zodomus.mappers.js';
@@ -63,7 +64,21 @@ export class IntegrationService {
     private readonly provider: ChannelProvider,
     private readonly audit: AuditService,
     private readonly now: () => number = Date.now,
+    private readonly providers?: ProviderRegistry,
   ) {}
+
+  /** The same service for another channel manager (admin pages per provider). */
+  for(providerId: string): IntegrationService | null {
+    if (providerId === this.provider.id) return this;
+    const p = this.providers?.get(providerId);
+    return p ? new IntegrationService(this.db, p, this.audit, this.now, this.providers) : null;
+  }
+
+  /** Provider-specific facts for the admin page (Beds24: write switch, date-range rule, credits). No secrets. */
+  details(): Record<string, unknown> | null {
+    const p = this.provider as ChannelProvider & { details?: () => Record<string, unknown> };
+    return typeof p.details === 'function' ? p.details() : null;
+  }
 
   configStatus() {
     return this.provider.configStatus();
@@ -186,7 +201,13 @@ export class IntegrationService {
 
   private assertReady() {
     if (!this.provider.isReady()) {
-      throw new AppError(409, 'INTEGRATION_NOT_CONFIGURED', 'Zodomus is not enabled or its credentials are missing. Set ZODOMUS_ENABLED and the API credentials in the server environment.');
+      throw new AppError(
+        409,
+        'INTEGRATION_NOT_CONFIGURED',
+        this.provider.id === 'beds24'
+          ? 'Beds24 is not enabled or its refresh token is missing. Set BEDS24_ENABLED and BEDS24_REFRESH_TOKEN in the server environment.'
+          : 'Zodomus is not enabled or its credentials are missing. Set ZODOMUS_ENABLED and the API credentials in the server environment.',
+      );
     }
   }
 

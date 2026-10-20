@@ -12,8 +12,15 @@ import { SupportAccessService } from './modules/support/support-access.service.j
 import type { ChannelProvider } from './modules/channels/channel-provider.js';
 import { DbCallRecorder, IntegrationService } from './modules/channels/integration.service.js';
 import { ZodomusAdapter } from './modules/channels/zodomus/zodomus.adapter.js';
+import { Beds24Adapter } from './modules/channels/beds24/beds24.adapter.js';
+import { ProviderRegistry } from './modules/channels/provider-registry.js';
 import { ChannelConnectionService } from './modules/channels/connection.service.js';
 import { SyncWorker } from './modules/channels/sync.service.js';
+import { ReservationService } from './modules/reservations/reservation.service.js';
+import { DiscrepancyService } from './modules/discrepancies/discrepancy.service.js';
+import { PhotoService } from './modules/photos/photo.service.js';
+import { ReportService } from './modules/reports/report.service.js';
+import { LocalPhotoStorage, type PhotoStorage } from './modules/photos/storage.js';
 
 /** Composition root: wires concrete implementations to the interfaces the modules depend on. */
 export interface Services {
@@ -29,6 +36,14 @@ export interface Services {
   integrations: IntegrationService;
   connections: ChannelConnectionService;
   syncWorker: SyncWorker;
+  reservations: ReservationService;
+  discrepancies: DiscrepancyService;
+  photos: PhotoService;
+  reports: ReportService;
+  /** The primary channel provider (Zodomus adapter or a test fake). */
+  provider: ChannelProvider;
+  /** Every channel provider; a connection's `provider` selects one. */
+  providers: ProviderRegistry;
 }
 
 export function createServices(
@@ -41,6 +56,10 @@ export function createServices(
     now?: () => number;
     /** Override the channel provider (tests use a fake; never the real API). */
     channelProvider?: ChannelProvider;
+    /** Override the Beds24 provider (tests use an adapter with a fake fetch). */
+    beds24Provider?: ChannelProvider;
+    /** Override photo storage (tests use a temporary folder). */
+    photoStorage?: PhotoStorage;
   },
 ): Services {
   const { db, config, logger, mailer } = input;
@@ -51,8 +70,13 @@ export function createServices(
   const invitations = new InvitationService(db, config, mailer, audit, hasher, sessions);
   const support = new SupportAccessService(db, config, mailer, audit);
   const provider = input.channelProvider ?? new ZodomusAdapter(config.zodomus, logger, new DbCallRecorder(db));
-  const integrations = new IntegrationService(db, provider, audit, input.now);
-  const connections = new ChannelConnectionService(db, config, provider, audit);
-  const syncWorker = new SyncWorker(db, provider, logger, input.now);
-  return { db, mailer, hasher, audit, sessions, auth, limits: createAuthRateLimits(input.rateLimits), invitations, support, integrations, connections, syncWorker };
+  const beds24 = input.beds24Provider ?? new Beds24Adapter(config.beds24, logger, new DbCallRecorder(db));
+  const providers = new ProviderRegistry([provider, beds24]);
+  const integrations = new IntegrationService(db, provider, audit, input.now, providers);
+  const connections = new ChannelConnectionService(db, config, providers, audit);
+  const syncWorker = new SyncWorker(db, providers, logger, input.now);
+  const reservations = new ReservationService(db, config, providers, audit, logger, input.now);
+  const discrepancies = new DiscrepancyService(db, audit);
+  const photos = new PhotoService(db, config, input.photoStorage ?? new LocalPhotoStorage(config.photos.storageDir), audit, logger);
+  return { db, mailer, hasher, audit, sessions, auth, limits: createAuthRateLimits(input.rateLimits), invitations, support, integrations, connections, syncWorker, reservations, discrepancies, photos, reports: new ReportService(db), provider, providers };
 }

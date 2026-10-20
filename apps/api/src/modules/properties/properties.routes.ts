@@ -230,6 +230,9 @@ export function propertiesRouter(deps: { db: Database; audit: AuditService }): R
       if ((await tx.channelRoomMapping.count({ where: { roomTypeId: id } })) > 0) {
         throw new AppError(409, 'ROOM_TYPE_MAPPED', 'This room type is mapped to a booking channel. Remove it from the channel mapping first.');
       }
+      if ((await tx.reservationRoom.count({ where: { roomTypeId: id } })) > 0) {
+        throw new AppError(409, 'ROOM_TYPE_HAS_BOOKINGS', 'This room type has bookings, so it cannot be deleted. Set it to Inactive instead.');
+      }
       // Calendar rows of a room type without rooms carry no information; remove them with it.
       await tx.inventoryDay.deleteMany({ where: { roomTypeId: id } });
       await tx.rateDay.deleteMany({ where: { roomTypeId: id } });

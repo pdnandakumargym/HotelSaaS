@@ -4,8 +4,13 @@ import type {
   ChannelInfo,
   ChannelPropertyRef,
   ChannelRoom,
+  ChannelPromotion,
+  ChannelPromotionProvider,
+  ChannelReservationProvider,
   ChannelSyncProvider,
   DateRange,
+  ParsedReservation,
+  ReservationQueueItem,
   RateRestrictions,
   CallContext,
   CallRecorder,
@@ -16,6 +21,8 @@ import type {
 } from '../channel-provider.js';
 import { ZodomusClient, type FetchLike, type ZodomusReadOperation } from './zodomus.client.js';
 import { normalizeRoomRates } from './zodomus.mappers.js';
+import { parseReservationQueue, parseReservations } from './zodomus.reservations.js';
+import { parsePromotions } from './zodomus.promotions.js';
 
 const KIND_TO_OPERATION: Record<ReferenceKind, ZodomusReadOperation> = {
   account: 'account',
@@ -25,7 +32,7 @@ const KIND_TO_OPERATION: Record<ReferenceKind, ZodomusReadOperation> = {
 };
 
 /** Zodomus implementation of the ChannelProvider port (Milestone 4: read-only account calls). */
-export class ZodomusAdapter implements ChannelProvider, ChannelSyncProvider {
+export class ZodomusAdapter implements ChannelProvider, ChannelSyncProvider, ChannelReservationProvider, ChannelPromotionProvider {
   readonly id = 'zodomus';
   readonly displayName = 'Zodomus';
   private readonly client: ZodomusClient | null;
@@ -182,8 +189,59 @@ export class ZodomusAdapter implements ChannelProvider, ChannelSyncProvider {
     );
   }
 
+  // --- Milestone 6: reservations. GET /reservations-cc (card data) is never called. ---------------
+
+  async reservationQueue(ref: ChannelPropertyRef, ctx: CallContext): Promise<ProviderCallResult<ReservationQueueItem[]>> {
+    const r = await this.require().call('reservationsQueue', { query: { channelId: ref.channelId, propertyId: ref.channelPropertyId } }, ctx);
+    if (!r.ok) return { ...r, data: undefined };
+    const items = parseReservationQueue(r.data);
+    if (!items) return unexpected(r, 'Zodomus returned the reservation queue in an unexpected format.');
+    return { ...r, data: items };
+  }
+
+  async fetchReservation(ref: ChannelPropertyRef & { channelReservationId: string }, ctx: CallContext): Promise<ProviderCallResult<ParsedReservation[]>> {
+    const r = await this.require().call('reservations', { query: { channelId: ref.channelId, propertyId: ref.channelPropertyId, reservationId: ref.channelReservationId } }, ctx);
+    if (!r.ok) return { ...r, data: undefined };
+    const items = parseReservations(r.data);
+    if (!items) return unexpected(r, 'Zodomus returned the reservation in an unexpected format.');
+    return { ...r, data: items };
+  }
+
+  async reservationsSummary(ref: ChannelPropertyRef, ctx: CallContext): Promise<ProviderCallResult<ParsedReservation[]>> {
+    const r = await this.require().call('reservationsSummary', { query: { channelId: ref.channelId, propertyId: ref.channelPropertyId } }, ctx);
+    if (!r.ok) return { ...r, data: undefined };
+    const items = parseReservations(r.data);
+    if (!items) return unexpected(r, 'Zodomus returned the reservation summary in an unexpected format.');
+    return { ...r, data: items };
+  }
+
+  createTestReservation(ref: ChannelPropertyRef & { status: 'new' | 'modified' | 'cancelled'; channelReservationId?: string }, ctx: CallContext): Promise<ProviderCallResult> {
+    if (this.config.environment !== 'sandbox') return Promise.reject(new Error('Test reservations can only be created in the Zodomus sandbox'));
+    const body: Record<string, unknown> = { channelId: ref.channelId, propertyId: ref.channelPropertyId, status: ref.status };
+    if (ref.channelReservationId) body['reservationId'] = ref.channelReservationId;
+    return this.require().call('reservationsCreateTest', { body }, ctx);
+  }
+
+  // --- Promotions (documented: GET /promotions, POST /activate-promotion, POST /deactivate-promotion; query parameters) ---
+
+  async promotions(ref: ChannelPropertyRef & { active: boolean }, ctx: CallContext): Promise<ProviderCallResult<ChannelPromotion[]>> {
+    const r = await this.require().call('promotions', { query: { channelId: ref.channelId, propertyId: ref.channelPropertyId, active: ref.active ? 1 : 0 } }, ctx);
+    if (!r.ok) return { ...r, data: undefined };
+    const items = parsePromotions(r.data);
+    if (!items) return unexpected(r, 'Zodomus returned promotions in an unexpected format.');
+    return { ...r, data: items };
+  }
+
+  setPromotionActive(ref: ChannelPropertyRef & { promotionId: string; active: boolean }, ctx: CallContext): Promise<ProviderCallResult> {
+    return this.require().call(ref.active ? 'promotionActivate' : 'promotionDeactivate', { query: { channelId: ref.channelId, propertyId: ref.channelPropertyId, promotionId: ref.promotionId } }, ctx);
+  }
+
   private require(): ZodomusClient {
     if (!this.client) throw new Error('Zodomus is not enabled or not configured');
     return this.client;
   }
+}
+
+function unexpected<T>(r: ProviderCallResult, message: string): ProviderCallResult<T> {
+  return { ...r, ok: false, outcome: 'INVALID_RESPONSE', data: undefined, error: { code: 'UNEXPECTED_SHAPE', message } };
 }

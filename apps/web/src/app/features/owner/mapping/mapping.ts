@@ -3,12 +3,40 @@ import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@a
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { forkJoin } from 'rxjs';
-import { CONNECTION_STATUS, CallSummary, ChannelApi, ChannelConnection, ChannelOption, RatePlan, SyncJob } from '../../../core/api/channel-api.service';
+import { CONNECTION_STATUS, CallSummary, ChannelApi, ChannelConnection, ChannelOption, ChannelOptions, RatePlan, SyncJob } from '../../../core/api/channel-api.service';
 import { errorMessage } from '../../../core/api/error-message';
 import { OrgApi, Property, RoomType } from '../../../core/api/org-api.service';
 import { AuthService } from '../../../core/auth/auth.service';
 import { PropertyPicker } from '../../../shared/ui/property-picker/property-picker';
 import { StatusPill } from '../../../shared/ui/status-pill/status-pill';
+
+/** Wording per channel manager. */
+const LABELS: Record<string, { channel: string; intro: string; idLabel: string; idHint: string; modelLegend: string; modelHint: string; rooms: string; room: string; rate: string; activated: string }> = {
+  zodomus: {
+    channel: 'Booking.com',
+    intro: 'Connect a property to Booking.com through Zodomus, then link each Booking.com room and rate to yours.',
+    idLabel: 'Booking.com property ID',
+    idHint: 'The hotel ID shown in your Booking.com Extranet.',
+    modelLegend: 'Pricing model used by your Booking.com property',
+    modelHint: 'It must match the pricing model set in the Booking.com Extranet, otherwise prices are rejected.',
+    rooms: 'Booking.com rooms',
+    room: 'Booking.com room',
+    rate: 'Booking.com rate',
+    activated: 'Property activated with Zodomus. Now map your rooms and rates.',
+  },
+  beds24: {
+    channel: 'Beds24',
+    intro: 'Connect a property to its Beds24 property, then link each Beds24 room and price to your room types and rate plans. Beds24 passes them on to the channels connected there.',
+    idLabel: 'Beds24 property ID',
+    idHint: 'The number shown in Beds24 under Settings › Properties.',
+    modelLegend: 'Prices',
+    modelHint: 'Each rate plan is sent to one Beds24 price (price1 … price16). Stay restrictions go with the rate plan linked to price1.',
+    rooms: 'Beds24 rooms',
+    room: 'Beds24 room',
+    rate: 'Beds24 price',
+    activated: 'Beds24 property found. Now link its rooms and prices to yours.',
+  },
+};
 
 /** Draft mapping: channel room id → { roomTypeId, rates: channel rate id → rate plan id }. */
 type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> }>;
@@ -20,36 +48,46 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
   template: `
     <header class="ss-page-head">
       <div>
-        <h1>Booking.com connection &amp; mapping</h1>
-        <p class="ss-muted">Connect a property to Booking.com through Zodomus, then link each Booking.com room and rate to yours.</p>
+        <h1>Channel connection &amp; mapping</h1>
+        <p class="ss-muted">{{ t().intro }}</p>
       </div>
       <ss-property-picker (changed)="onProperty($event)" />
     </header>
     @if (error(); as e) { <p class="ss-alert ss-alert--error" role="alert">{{ e }}</p> }
     @if (notice(); as n) { <p class="ss-alert ss-alert--success" role="status">{{ n }}</p> }
 
-    @if (options(); as o) {
+    @if (readyProviders().length > 1) {
+      <div class="providers" role="radiogroup" aria-label="Channel manager">
+        @for (p of readyProviders(); track p.id) {
+          <label class="radio"><input type="radio" name="provider" [value]="p.id" [checked]="provider() === p.id" (change)="chooseProvider(p.id)" /> {{ p.id === 'zodomus' ? 'Booking.com via Zodomus' : 'Beds24 (every channel connected in your Beds24 account)' }}</label>
+        }
+      </div>
+    }
+    @if (opt(); as o) {
       @if (!o.ready) {
         <p class="ss-alert ss-alert--info">The channel manager is not enabled on this platform yet. Please contact support.</p>
       } @else if (property()) {
         @if (!connection()) {
           <section class="ss-card">
-            <h2 class="ss-card__title">Connect to Booking.com</h2>
+            <h2 class="ss-card__title">Connect to {{ t().channel }}</h2>
+            @if (provider() === 'beds24') {
+              <p class="ss-alert ss-alert--info">Beds24 accounts are live. StaySync reads your Beds24 rooms now; it changes the Beds24 calendar only after the platform enables Beds24 writes. Beds24 passes changes on to Booking.com, Airbnb and other channels only on a paid Beds24 account.</p>
+            }
             @if (o.environment === 'sandbox') {
               <p class="ss-alert ss-alert--info">Test mode (Zodomus sandbox): use any number as the Booking.com property ID. No real Booking.com property is changed.</p>
             }
             @if (canManage()) {
               <form (ngSubmit)="connect(o.channels[0]!)" class="form">
-                <label class="ss-field"><span>Booking.com property ID</span>
+                <label class="ss-field"><span>{{ t().idLabel }}</span>
                   <input class="ss-input" name="pid" required maxlength="40" pattern="[A-Za-z0-9_-]+" inputmode="numeric" [(ngModel)]="channelPropertyId" placeholder="e.g. 1234567" />
-                  <small class="ss-muted">The hotel ID shown in your Booking.com Extranet.</small>
+                  <small class="ss-muted">{{ t().idHint }}</small>
                 </label>
                 <fieldset>
-                  <legend>Pricing model used by your Booking.com property</legend>
+                  <legend>{{ t().modelLegend }}</legend>
                   @for (m of o.channels[0]?.priceModels ?? []; track m.id) {
-                    <label class="radio"><input type="radio" name="pm" [value]="m.id" [(ngModel)]="priceModelId" /> {{ m.name }} @if (m.recommended) { <ss-status-pill tone="info">Booking.com's recommendation</ss-status-pill> }</label>
+                    <label class="radio"><input type="radio" name="pm" [value]="m.id" [(ngModel)]="priceModelId" /> {{ m.name }} @if (m.recommended && provider() === 'zodomus') { <ss-status-pill tone="info">Booking.com's recommendation</ss-status-pill> }</label>
                   }
-                  <small class="ss-muted">It must match the pricing model set in the Booking.com Extranet, otherwise prices are rejected.</small>
+                  <small class="ss-muted">{{ t().modelHint }}</small>
                 </fieldset>
                 <button type="submit" class="ss-btn" [disabled]="busy()">{{ busy() ? 'Connecting…' : 'Connect' }}</button>
               </form>
@@ -62,7 +100,7 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
           <section class="ss-card">
             <h2 class="ss-card__title">{{ c.channelName }} <ss-status-pill [tone]="status(c).tone">{{ status(c).label }}</ss-status-pill></h2>
             <dl class="kv">
-              <dt>Booking.com property ID</dt><dd><code>{{ c.channelPropertyId }}</code></dd>
+              <dt>{{ t().idLabel }}</dt><dd><code>{{ c.channelPropertyId }}</code></dd>
               <dt>Pricing model</dt><dd>{{ modelName(o.channels[0], c.priceModelId) }}</dd>
               <dt>Currency</dt><dd>{{ c.currency }}</dd>
               <dt>Environment</dt><dd>{{ c.environment === 'sandbox' ? 'Sandbox (test mode)' : 'Production' }}</dd>
@@ -83,8 +121,8 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
             <section class="ss-card">
               <h2 class="ss-card__title">Rooms &amp; rates mapping</h2>
               <div class="refhead">
-                <span class="ss-muted small">{{ c.channelRoomsFetchedAt ? 'Booking.com rooms loaded ' + (c.channelRoomsFetchedAt | date: 'medium') : 'Booking.com rooms not loaded yet' }}</span>
-                @if (canManage()) { <button type="button" class="ss-btn ss-btn--ghost" (click)="loadRooms(c)" [disabled]="busy()">Reload Booking.com rooms</button> }
+                <span class="ss-muted small">{{ c.channelRoomsFetchedAt ? t().rooms + ' loaded ' + (c.channelRoomsFetchedAt | date: 'medium') : t().rooms + ' not loaded yet' }}</span>
+                @if (canManage()) { <button type="button" class="ss-btn ss-btn--ghost" (click)="loadRooms(c)" [disabled]="busy()">Reload {{ t().rooms }}</button> }
               </div>
               @if (!roomTypes().length) {
                 <p class="ss-alert ss-alert--info">Add room types with rooms first. <a routerLink="/app/rooms">Rooms &amp; units</a></p>
@@ -95,7 +133,7 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
                   @for (cr of c.channelRooms; track cr.id) {
                     <div class="room">
                       <div class="roomhead">
-                        <div class="roomname"><strong>{{ cr.name }}</strong><span class="ss-muted small">Booking.com room {{ cr.id }}</span></div>
+                        <div class="roomname"><strong>{{ cr.name }}</strong><span class="ss-muted small">{{ t().room }} {{ cr.id }}</span></div>
                         <label class="ss-field inline"><span>Your room type</span>
                           <select class="ss-input" [name]="'rt-' + cr.id" [attr.data-room]="cr.id" [ngModel]="draft()[cr.id]?.roomTypeId ?? ''" (ngModelChange)="setRoom(cr.id, $event)" [disabled]="!canManage()">
                             <option value="">Not connected</option>
@@ -105,7 +143,7 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
                       </div>
                       @if (draft()[cr.id]?.roomTypeId) {
                         <table class="ss-table rates">
-                          <thead><tr><th scope="col">Booking.com rate</th><th scope="col">Max. guests</th><th scope="col">Your rate plan</th></tr></thead>
+                          <thead><tr><th scope="col">{{ t().rate }}</th><th scope="col">Max. guests</th><th scope="col">Your rate plan</th></tr></thead>
                           <tbody>
                             @for (rate of cr.rates; track rate.id) {
                               <tr>
@@ -125,7 +163,7 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
                     </div>
                   }
                   @let cov = coverage(c);
-                  @if (cov.rooms < cov.totalRooms || cov.rates < cov.totalRates) {
+                  @if (provider() === 'zodomus' && (cov.rooms < cov.totalRooms || cov.rates < cov.totalRates)) {
                     <p class="ss-alert ss-alert--info coverage">
                       Zodomus confirms the property only when <strong>every</strong> Booking.com room and rate is mapped.
                       Mapped so far: {{ cov.rooms }} of {{ cov.totalRooms }} rooms, {{ cov.rates }} of {{ cov.totalRates }} rates.
@@ -142,14 +180,14 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
                   </ul>
                 }
               } @else {
-                <p class="ss-muted">Load the Booking.com rooms to start mapping.</p>
+                <p class="ss-muted">Load the {{ t().rooms }} to start mapping.</p>
               }
             </section>
           }
 
           @if (c.status === 'ACTIVE') {
             <section class="ss-card">
-              <h2 class="ss-card__title">Recent updates sent to Booking.com</h2>
+              <h2 class="ss-card__title">Recent updates sent to {{ t().channel }}</h2>
               @if (jobs().length) {
                 <div class="ss-table-wrap">
                   <table class="ss-table">
@@ -198,6 +236,7 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
     .inline { min-width: 240px; }
     .rates { margin-top: 8px; }
     .rates select { height: 34px; }
+    .providers { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
     .steps { margin: 12px 0 0; padding-left: 18px; font-size: 13.5px; }
     .steps .bad { color: var(--ss-red-600); }
   `,
@@ -207,7 +246,17 @@ export class Mapping {
   private readonly org = inject(OrgApi);
   private readonly auth = inject(AuthService);
   protected readonly property = signal<Property | null>(null);
-  protected readonly options = signal<{ ready: boolean; environment: string; channels: ChannelOption[] } | null>(null);
+  protected readonly options = signal<ChannelOptions | null>(null);
+  /** Selected channel manager; Zodomus unless the owner picks Beds24. */
+  protected readonly provider = signal<string>('zodomus');
+  private readonly allConnections = signal<ChannelConnection[]>([]);
+  protected readonly readyProviders = computed(() => (this.options()?.providers ?? []).filter((p) => p.ready));
+  protected readonly opt = computed(() => {
+    const o = this.options();
+    if (!o) return null;
+    return o.providers?.find((p) => p.id === this.provider()) ?? { id: 'zodomus', displayName: 'Zodomus', ready: o.ready, environment: o.environment, channels: o.channels };
+  });
+  protected readonly t = computed(() => LABELS[this.provider()] ?? LABELS['zodomus']!);
   protected readonly connection = signal<ChannelConnection | null>(null);
   protected readonly roomTypes = signal<RoomType[]>([]);
   protected readonly plans = signal<RatePlan[]>([]);
@@ -231,14 +280,24 @@ export class Mapping {
     forkJoin({ options: this.api.options(), connections: this.api.connections(p.id), roomTypes: this.org.roomTypes(p.id), plans: this.api.ratePlans(p.id) }).subscribe({
       next: (r) => {
         this.options.set(r.options);
-        const recommended = r.options.channels[0]?.priceModels.find((m) => m.recommended);
-        if (recommended) this.priceModelId = recommended.id;
         this.roomTypes.set(r.roomTypes.filter((t) => t.status === 'ACTIVE'));
         this.plans.set(r.plans.filter((x) => x.status === 'ACTIVE'));
-        this.setConnection(r.connections.find((c) => c.status !== 'DISCONNECTED') ?? null);
+        this.allConnections.set(r.connections);
+        // Show the provider that already has a connection; otherwise Zodomus.
+        const existing = r.connections.find((c) => c.status !== 'DISCONNECTED');
+        this.chooseProvider(existing?.provider ?? 'zodomus');
       },
       error: (e: unknown) => this.error.set(errorMessage(e)),
     });
+  }
+
+  protected chooseProvider(id: string): void {
+    this.provider.set(id);
+    this.steps.set([]);
+    this.confirmDisconnect.set(false);
+    const recommended = this.opt()?.channels[0]?.priceModels.find((m) => m.recommended) ?? this.opt()?.channels[0]?.priceModels[0];
+    if (recommended) this.priceModelId = recommended.id;
+    this.setConnection(this.allConnections().find((c) => c.status !== 'DISCONNECTED' && (c.provider ?? 'zodomus') === id) ?? null);
   }
 
   protected status(c: ChannelConnection) {
@@ -297,9 +356,11 @@ export class Mapping {
   protected connect(channel: ChannelOption): void {
     const p = this.property();
     if (!p) return;
-    this.run(this.api.connect(p.id, { channelId: channel.channelId, channelPropertyId: this.channelPropertyId.trim(), priceModelId: Number(this.priceModelId) }), (r) => {
+    const body = { channelId: channel.channelId, channelPropertyId: this.channelPropertyId.trim(), priceModelId: Number(this.priceModelId), ...(this.provider() === 'zodomus' ? {} : { provider: this.provider() }) };
+    this.run(this.api.connect(p.id, body), (r) => {
+      this.remember(r.connection);
       this.setConnection(r.connection);
-      this.notice.set(r.result.ok ? 'Property activated with Zodomus. Now map your rooms and rates.' : null);
+      this.notice.set(r.result.ok ? this.t().activated : null);
       if (!r.result.ok) this.error.set(r.connection.lastError ?? r.result.error);
     });
   }
@@ -321,11 +382,11 @@ export class Mapping {
       if (r.result.ok) {
         this.notice.set(
           r.syncJobsQueued
-            ? `Property confirmed. Connected — ${r.syncJobsQueued} updates (one year of availability and rates) are being sent to Booking.com.`
+            ? `Property confirmed. Connected — ${r.syncJobsQueued} updates (one year of availability and rates) are being sent to ${this.t().channel}.`
             : `Status check OK${r.result.providerMessage ? ': ' + r.result.providerMessage : ''}.`,
         );
       } else {
-        const msg = r.result.providerMessage && r.result.providerMessage !== 'OK' ? `Zodomus: ${r.result.providerMessage}` : (r.result.error ?? 'Status check failed.');
+        const msg = r.result.providerMessage && r.result.providerMessage !== 'OK' ? `${this.opt()?.displayName ?? 'Zodomus'}: ${r.result.providerMessage}` : (r.result.error ?? 'Status check failed.');
         this.error.set(r.connection.status === 'ACTIVE' ? msg : `Not confirmed yet. ${msg}`);
       }
     });
@@ -342,7 +403,8 @@ export class Mapping {
       return;
     }
     this.confirmDisconnect.set(false);
-    this.run(this.api.disconnect(c.propertyId, c.id), () => {
+    this.run(this.api.disconnect(c.propertyId, c.id), (r) => {
+      this.remember(r.connection);
       this.notice.set('Disconnected. StaySync no longer sends updates for this property.');
       this.setConnection(null);
     });
@@ -354,7 +416,7 @@ export class Mapping {
       rates: Object.entries(v.rates).map(([channelRateId, ratePlanId]) => ({ channelRateId, ratePlanId })),
     }));
     if (!rooms.length) {
-      this.error.set('Connect at least one Booking.com room to one of your room types.');
+      this.error.set(`Connect at least one ${this.t().room} to one of your room types.`);
       return;
     }
     const missing = rooms.find((r) => !r.rates.length);
@@ -365,7 +427,7 @@ export class Mapping {
     this.run(this.api.saveMapping(c.propertyId, c.id, { rooms }), (r) => {
       this.setConnection(r.connection);
       this.steps.set(r.steps);
-      if (r.connection.status === 'ACTIVE') this.notice.set(`Connected. ${r.syncJobsQueued} updates (one year of availability and rates) are being sent to Booking.com.`);
+      if (r.connection.status === 'ACTIVE') this.notice.set(`Connected. ${r.syncJobsQueued} updates (one year of availability and rates) are being sent to ${this.t().channel}.`);
       else if (r.connection.status === 'ACTIVATED') this.notice.set(r.connection.lastError ?? 'Rooms activated. Use "Check status" to finish the connection.');
       else this.error.set(r.connection.lastError);
     });
@@ -374,7 +436,13 @@ export class Mapping {
     this.api.jobs(c.propertyId, c.id).subscribe({ next: (j) => this.jobs.set(j), error: () => this.jobs.set([]) });
   }
 
+  private remember(c: ChannelConnection | null | undefined): void {
+    if (!c) return;
+    this.allConnections.update((list) => [...list.filter((x) => x.id !== c.id), c]);
+  }
+
   private setConnection(c: ChannelConnection | null): void {
+    this.remember(c);
     this.connection.set(c);
     const d: Draft = {};
     for (const m of c?.roomMappings ?? []) d[m.channelRoomId] = { roomTypeId: m.roomTypeId, rates: Object.fromEntries(m.rates.map((r) => [r.channelRateId, r.ratePlanId])) };

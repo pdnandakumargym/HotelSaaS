@@ -40,7 +40,7 @@ export class OwnerDashboard implements OnInit {
   }
 
   protected readonly kpis = [
-    { label: "Today's bookings", hint: 'Bookings sync arrives in Milestone 6' },
+    { label: "Today's bookings", hint: 'See Bookings for channel reservations' },
     { label: 'Occupancy', hint: 'Needs rooms and inventory' },
     { label: 'Revenue', hint: 'Needs bookings' },
     { label: 'Upcoming check-ins', hint: 'Needs bookings' },
@@ -60,7 +60,7 @@ export class OwnerDashboard implements OnInit {
     { label: 'Set rates and inventory', milestone: 5, done: false },
     { label: 'Connect the Zodomus sandbox', milestone: 4, done: false },
     { label: 'Map rooms and rate plans', milestone: 5, done: false },
-    { label: 'Run the first synchronization', milestone: 6, done: false },
+    { label: 'Run the first synchronization', milestone: 6, done: false, link: '/app/sync' },
   ]);
   protected readonly doneCount = computed(() => this.onboarding().filter((s) => s.done).length);
 }

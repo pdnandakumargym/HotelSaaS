@@ -7,6 +7,7 @@ import type { AppConfig } from './config/env.js';
 import type { Services } from './container.js';
 import { csrfProtection, loadSession } from './middleware/auth.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
+import { mediaRouter } from './modules/photos/photos.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { invitationsRouter } from './modules/invitations/invitations.routes.js';
 import { organizationsRouter } from './modules/organizations/organizations.routes.js';
@@ -91,12 +92,13 @@ export function createApp(deps: AppDependencies): Express {
     const s = deps.services;
     api.use(loadSession(s.sessions, config));
     api.use(csrfProtection());
+    api.use('/media', mediaRouter(s.photos));
     api.use('/auth', authRouter({ config, auth: s.auth, sessions: s.sessions, limits: s.limits }));
-    api.use('/organizations', organizationsRouter({ db: s.db, config, audit: s.audit, invitations: s.invitations, support: s.support, integrations: s.integrations, connections: s.connections }));
+    api.use('/organizations', organizationsRouter({ db: s.db, config, audit: s.audit, invitations: s.invitations, support: s.support, integrations: s.integrations, connections: s.connections, reservations: s.reservations, discrepancies: s.discrepancies, photos: s.photos, reports: s.reports, providers: s.providers }));
     api.use('/invitations', invitationsRouter({ config, invitations: s.invitations, limits: s.limits }));
     api.use('/amenities', amenitiesRouter());
     api.use('/plans', plansRouter(s.db));
-    api.use('/admin', adminRouter({ db: s.db, config, audit: s.audit, support: s.support, integrations: s.integrations }));
+    api.use('/admin', adminRouter({ db: s.db, config, audit: s.audit, support: s.support, integrations: s.integrations, reservations: s.reservations, version }));
   }
   deps.registerRoutes?.(api);
   api.use(notFoundHandler());

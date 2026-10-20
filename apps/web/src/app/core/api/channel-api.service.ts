@@ -29,6 +29,8 @@ export interface CalendarDay {
   available: number;
   override: number | null;
   stopSell: boolean;
+  /** Rooms booked through channels on this night (already subtracted from `available`). */
+  booked: number;
 }
 export interface RateDayView {
   date: string;
@@ -65,6 +67,20 @@ export interface ChannelOption {
   name: string;
   priceModels: { id: number; name: string; recommended?: boolean }[];
 }
+export interface ProviderOption {
+  id: string;
+  displayName: string;
+  ready: boolean;
+  environment: string;
+  channels: ChannelOption[];
+}
+/** Top-level fields describe Zodomus (as before); `providers` lists every channel manager. */
+export interface ChannelOptions {
+  ready: boolean;
+  environment: string;
+  channels: ChannelOption[];
+  providers?: ProviderOption[];
+}
 export interface ChannelRoom {
   id: string;
   name: string;
@@ -74,6 +90,8 @@ export type ConnectionStatus = 'DRAFT' | 'ACTIVATED' | 'ACTIVE' | 'ERROR' | 'DIS
 export interface ChannelConnection {
   id: string;
   propertyId: string;
+  /** Channel manager ("zodomus" or "beds24"). */
+  provider?: string;
   environment: string;
   channelId: number;
   channelName: string;
@@ -162,13 +180,13 @@ export class ChannelApi {
   }
 
   // channel connections
-  options(): Observable<{ ready: boolean; environment: string; channels: ChannelOption[] }> {
-    return this.data(this.http.get<Envelope<{ ready: boolean; environment: string; channels: ChannelOption[] }>>(`${this.org}/channel-options`));
+  options(): Observable<ChannelOptions> {
+    return this.data(this.http.get<Envelope<ChannelOptions>>(`${this.org}/channel-options`));
   }
   connections(propertyId: string): Observable<ChannelConnection[]> {
     return this.data(this.http.get<Envelope<ChannelConnection[]>>(`${this.p(propertyId)}/channel-connections`));
   }
-  connect(propertyId: string, body: { channelId: number; channelPropertyId: string; priceModelId: number }): Observable<{ connection: ChannelConnection; result: CallSummary }> {
+  connect(propertyId: string, body: { channelId: number; channelPropertyId: string; priceModelId: number; provider?: string }): Observable<{ connection: ChannelConnection; result: CallSummary }> {
     return this.data(this.http.post<Envelope<{ connection: ChannelConnection; result: CallSummary }>>(`${this.p(propertyId)}/channel-connections`, body));
   }
   activate(propertyId: string, id: string): Observable<{ connection: ChannelConnection; result: CallSummary }> {

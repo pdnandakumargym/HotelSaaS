@@ -13,6 +13,9 @@ import { requestMeta } from '../auth/auth.routes.js';
 import { getSubscription, usage } from '../subscriptions/plan-limits.js';
 import type { SupportAccessService } from '../support/support-access.service.js';
 import { adminIntegrationsRouter } from '../channels/channels.routes.js';
+import { adminReservationsRouter } from '../reservations/reservations.routes.js';
+import { systemRouter } from './system.routes.js';
+import type { ReservationService } from '../reservations/reservation.service.js';
 import type { IntegrationService } from '../channels/integration.service.js';
 
 const OrgStatusBody = z.object({ status: z.enum(['ACTIVE', 'SUSPENDED']), reason: z.string().trim().min(5).max(500) }).strict();
@@ -57,11 +60,13 @@ for (const [method, path, summary] of [
  * These endpoints deliberately expose no guest personal data; support access to a
  * tenant's guest data will need an explicit, time-boxed, audited grant (Milestone 3).
  */
-export function adminRouter(deps: { db: Database; config: AppConfig; audit: AuditService; support: SupportAccessService; integrations: IntegrationService }): Router {
+export function adminRouter(deps: { db: Database; config: AppConfig; audit: AuditService; support: SupportAccessService; integrations: IntegrationService; reservations: ReservationService; version?: string }): Router {
   const { db, config, audit, support } = deps;
   const r = Router();
   r.use(requireAuth(), requirePlatformPermission('admin.access'));
   r.use('/integrations', adminIntegrationsRouter(deps.integrations));
+  r.use(adminReservationsRouter({ db, audit, support, reservations: deps.reservations }));
+  r.use(systemRouter({ db, config, version: deps.version ?? '0.1.0' }));
 
   r.get('/overview', async (_req, res) => {
     const [organizations, properties, users, lockedUsers] = await withSystem(db, (tx) =>

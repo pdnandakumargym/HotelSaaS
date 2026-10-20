@@ -7,8 +7,9 @@
 | 3 | Organization/property/room CRUD, admin portal, plans and limits | **Done** (see below) |
 | 4 | Zodomus adapter, credential status, read-only calls, Test Connection, API health, sanitized logs | **Done**, read-only calls confirmed against the Zodomus sandbox |
 | 5 | Mapping, room-rates, availability, controlled sandbox writes | **Done** (Booking.com via Zodomus; tested against a fake and a local stub, see below) |
-| 6 | Reservations queue, test reservations, sync jobs, discrepancy center | Not started |
-| 7 | Full test suite, docs, threat review, deployment readiness | Not started |
+| 6 | Reservations queue, test reservations, sync jobs, discrepancy center | **Done** (tested against a fake and a local stub; run the sandbox steps below) |
+| 7 | Full test suite, docs, threat review, deployment readiness | **Done** (see below) |
+| 8 | Beds24 as a second channel manager (availability, prices, restrictions, bookings) | **Built and tested against a fake Beds24 API**; live check with your Beds24 account: [beds24-api.md](beds24-api.md) |
 
 ## Milestone 1 results
 
@@ -31,6 +32,98 @@ Verified in a Linux build environment (Node 24.21.0, PostgreSQL 16) on 13 Oct 20
 
 Not verified on the target Windows machine yet: `scripts/setup-windows.ps1`, Docker Desktop and the
 `postgres:17-alpine` container. Run the script, then `npm run check`.
+
+## Milestone 7 results
+
+Verified in the Linux build environment on 20 Oct 2026:
+
+| Check | Result |
+|---|---|
+| API lint, strict typecheck, production build | pass |
+| API tests (adds reports: occupancy/revenue/ADR/RevPAR by night, room type and channel, partial stays, other currencies, test bookings, CSV with formula neutralisation; promotions list/activate/deactivate with documented query parameters, roles, inactive connection; system health without secrets; worker heartbeats; guest-data retention purge; photo upload limits) | 347 passed |
+| Web lint, typecheck, unit tests (adds Reports, Promotions, photo gallery; no planned placeholder pages left) | pass, 62 tests |
+| Web production build | pass |
+| End-to-end smoke (Playwright, desktop 1440 px and mobile Pixel 7): login errors, not found, every owner module opens with no server errors or page errors | 6 passed |
+| Production runtime simulation: production-only dependencies installed as in the Docker image; API (`NODE_ENV=production`) ready, worker started, `sharp`/`argon2` native modules load | pass |
+| `docker compose -f infra/docker-compose.prod.yml config` | valid |
+| `npm audit --omit=dev --audit-level=high` | 0 vulnerabilities (after Prisma 7.10.1) |
+| Drift check (`scripts/check-drift.sh`) incl. a negative test | no drift; detects a missing table |
+
+Not verified here: building the Docker images (Docker Hub is blocked in the build environment; CI builds them and validates the
+Caddyfile) and a real server deployment.
+
+Delivered:
+
+- **Reports**: occupancy, room nights, revenue, ADR, RevPAR by night (chart + table), room type and channel; bookings and
+  cancellations; period presets; CSV export.
+- **Discounts & Promotions**: Booking.com promotions with their results (bookings, room nights, revenue); activate/deactivate.
+  Creating promotions stays in the extranet (Zodomus does not document the accepted values).
+- **Admin System Health & Config**: checks, database and migrations, worker heartbeats, queue, polling, usage, settings in effect.
+- **Separate worker process** (`node dist/worker.js`) with heartbeats; the API can run the loops itself for local use.
+- **Guest-data retention** (`GUEST_DATA_RETENTION_DAYS`), photo upload rate limit.
+- **Deployment**: API/worker/migration image, web image with Caddy (automatic HTTPS, security headers), production compose
+  (internal DB network, non-root containers, nightly backups), production env template, [deployment guide](deployment.md),
+  CI image builds, audit and drift checks.
+- **Security review**: [threat model, findings and checklist](security.md).
+
+## Known limitations (Milestone 7)
+
+- Docker images were not built in this environment (CI builds them). First real deployment should follow docs/deployment.md step by step.
+- Rate limits are per process; one API container is assumed (see security.md).
+- Encryption-key rotation needs a planned re-encryption job (not built).
+- Photo push and promotion creation for Booking.com wait for Zodomus documentation.
+- Live Booking.com sync needs Zodomus certification and production keys.
+
+## Photos (added after Milestone 6, 19 Oct 2026)
+
+- Property and room-type photos on **Photos & Amenities**: upload (JPEG, PNG, WebP, up to 10 MB, at least 320 px), caption, main photo,
+  order, delete. Files are checked by their real content, decoded and re-encoded to JPEG (max 2560 px) with `sharp`, which removes
+  metadata such as the camera's GPS position; stored under random names in `PHOTO_STORAGE_DIR` (default `apps/api/storage/photos`,
+  not in Git); served only to signed-in members of the organization, or through signed links that expire after 7 days
+  (`/api/v1/media/photos/…`, needs `PUBLIC_MEDIA_BASE_URL`) for channels to download.
+- **Not sent to Booking.com yet.** Zodomus's content call `POST /property` (`multimediaDescriptions: [{url, tag}]`) has no documented
+  field for the existing property, and the signed-in documentation has no further detail, so a call could create a new Booking.com
+  property. Waiting for Zodomus support to confirm how to update an existing property's photos.
+- Tests: 6 API integration tests (re-encoding, metadata removal, scaling, invalid/tiny/oversized/duplicate files, roles, tenant
+  isolation, signed links) and 3 web tests.
+
+## Milestone 6 results
+
+Reservation schemas were read from the authenticated `swagger.json` on 19 Oct 2026 (see [zodomus-api.md](zodomus-api.md)).
+Verified in the Linux build environment on 19 Oct 2026:
+
+| Check | Result |
+|---|---|
+| API lint, strict typecheck, production build | pass |
+| API tests (adds reservation parsing incl. dates with/without time, unrecognised dates, amounts to minor units, rooms/prices as object or array, card-like keys dropped; queue polling, one retrieval per change, summary import once, latest queue entry wins, concurrent polls; guest data encrypted and absent from logs, rows and audit; availability deducted and sent (exclusive `dateTo`); modification releases old nights; cancellation restores; unmapped room, unrecognised dates, overbooking (auto-resolved), retrieval failure (auto-resolved), unknown modification, repeated queue failures; sandbox-only test bookings; guest names hidden from read-only members; support sees booking facts only under an approved grant (audited); tenant isolation; failed sync job → discrepancy → retry → auto-resolved; resolve/ignore/reopen audited; room type with bookings cannot be deleted) | 326 passed |
+| Migrations on an empty database; drift check (columns, indexes, keys, enums of migrated vs schema-generated databases) | applied; no drift (only the two hand-written partial indexes differ, as intended) |
+| Web lint, typecheck, unit tests (adds Bookings and Discrepancy Center) | pass, 57 tests |
+| Web production build | pass |
+| Browser walkthrough against a local HTTPS Zodomus stub (fake data): connect and map → create two test bookings → detail view with guest data → modify both onto the same nights (overbooking opened, calendar shows "2 booked") → cancel one (overbooking resolved automatically) → Synchronization Status with delivered availability updates | pass |
+
+Features: Bookings (list with upcoming / past / all, status, needs-review and booking-number filters; detail with stay, rooms,
+mapping, inventory effect and guest details for permitted roles, audited); fetch now; import earlier bookings; sandbox test
+bookings; availability = min(rooms to sell, rooms in service) − rooms booked; Synchronization Status (per connection: queued,
+delivered and failed updates, last delivery, last booking fetch, retry failed updates); Discrepancy Center (overbooking, unmapped
+room, incomplete booking, booking not retrieved, unknown booking changed, update not delivered, bookings not fetched; one open item
+per problem with an occurrence count, automatic resolution, resolve / ignore / reopen with notes); admin **Sync Jobs**
+(platform-wide counts only); admin support view of booking facts under an owner-approved grant (never guest data).
+
+## Known limitations (Milestone 6)
+
+- Reservation calls were checked against the real Zodomus sandbox on 19 Oct 2026 with `npm run zodomus:reservations` (createtest,
+  queue, summary, reservation); the shapes found are in [zodomus-api.md](zodomus-api.md) and are covered by tests. Test mode returns
+  one fixed booking for every queue entry, so sandbox bookings all look alike. Unrecognised values are never guessed: the booking is
+  stored, flagged "needs review" and not deducted.
+- Past stays (from the summary's fixed samples) are stored without opening discrepancies.
+- The swagger does not document the format of the queue `date` field or of reservation status words; StaySync relies on the
+  documented queue codes 1/2/3 and stores the other values as text.
+- Bookings are fetched by polling (every minute by default). The optional Zodomus webhook is not implemented (it needs a public
+  HTTPS endpoint; planned with deployment in Milestone 7).
+- `GET /reservations-cc` (card data) is never called, so certification step 12 remains an open point with Zodomus support.
+- Guest details are encrypted with a key derived from `DATA_ENCRYPTION_KEY`; rotating that key needs a re-encryption job (Milestone 7).
+- A reservation room that is not mapped is not deducted. After mapping the room, adjust availability for those nights by hand
+  (or wait for the booking's next modification).
 
 ## Milestone 5 results
 
@@ -56,7 +149,7 @@ disconnect via property-cancellation.
 
 - **Not yet run against the real Zodomus sandbox** for the write calls (the build environment cannot reach it). Run the steps in the
   README on your PC; Zodomus test mode returns fixed responses, so success there proves the request format, not real Booking.com data.
-- Reservations are not deducted from availability yet (Milestone 6). Until then, availability = rooms in service, optionally lowered.
+- (Resolved in Milestone 6: reservations are deducted from availability.)
 - Restrictions sent: closed, minimum/maximum stay, closed on arrival/departure. Advance-booking limits, exact stay and weekday masks
   are not exposed in the UI yet. Price models 3/4 (Expedia/Airbnb) are not supported.
 - Zodomus certification step 12 requires `GET /reservations-cc` (card data), which StaySync deliberately does not call in Phase 1.

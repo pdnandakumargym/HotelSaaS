@@ -89,6 +89,31 @@ interface Envelope<T> {
   data: T;
 }
 
+export interface SystemHealth {
+  app: { name: string; version: string; nodeEnv: string; node: string; uptimeSeconds: number; time: string };
+  database: { ok: boolean; latencyMs: number | null; migrationsApplied: number | null; latestMigration: string | null; pendingMigrations: string[] | null };
+  workers: { live: number; embeddedInApi: boolean; list: { id: string; role: string; version: string; startedAt: string; lastSeenAt: string; stale: boolean; stats: Record<string, Record<string, unknown>> }[] };
+  queue: { pending: number; running: number; failed24h: number; oldestPendingAt: string | null; reservationPollingFailing: number } | null;
+  usage: { organizations: number; photos: number; photoBytes: number; openDiscrepancies: number } | null;
+  config: Record<string, Record<string, unknown>>;
+  checks: { name: string; ok: boolean }[];
+}
+
+/** Beds24 status for admins (no secrets). */
+export interface Beds24Status {
+  config: ProviderConfig;
+  health: IntegrationHealth;
+  details: { allowWrites: boolean; calendarToInclusive: boolean | null; credits: { limit: number | null; remaining: number | null; resetsInSeconds: number | null; observedAt: string } | null } | null;
+}
+
+/** Platform-wide counts only (no tenant data). */
+export interface PlatformSyncOverview {
+  jobs: { pending?: number; running?: number; failed24h: number; oldestPendingAt: string | null };
+  connections: Partial<Record<'draft' | 'activated' | 'active' | 'error' | 'disconnected', number>>;
+  reservationPollingFailing: number;
+  openDiscrepancies: Partial<Record<string, number>>;
+}
+
 @Injectable({ providedIn: 'root' })
 export class IntegrationsApi {
   private readonly http = inject(HttpClient);
@@ -100,6 +125,18 @@ export class IntegrationsApi {
   }
   testConnection(): Observable<CallResult> {
     return this.http.post<Envelope<CallResult>>(`${this.admin}/test`, {}).pipe(map((r) => r.data));
+  }
+  beds24(): Observable<Beds24Status> {
+    return this.http.get<Envelope<Beds24Status>>(`${API_BASE}/admin/integrations/beds24`).pipe(map((r) => r.data));
+  }
+  beds24Test(): Observable<CallResult> {
+    return this.http.post<Envelope<CallResult>>(`${API_BASE}/admin/integrations/beds24/test`, {}).pipe(map((r) => r.data));
+  }
+  system(): Observable<SystemHealth> {
+    return this.http.get<Envelope<SystemHealth>>(`${API_BASE}/admin/system`).pipe(map((r) => r.data));
+  }
+  syncOverview(): Observable<PlatformSyncOverview> {
+    return this.http.get<Envelope<PlatformSyncOverview>>(`${this.admin}/sync`).pipe(map((r) => r.data));
   }
   calls(limit = 50): Observable<CallLog[]> {
     return this.http.get<Envelope<CallLog[]>>(`${this.admin}/calls`, { params: { limit } }).pipe(map((r) => r.data));

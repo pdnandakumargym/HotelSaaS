@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: staysync
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: staysync
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U staysync" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      NODE_ENV: test
+      PGPASSWORD: ci-only-password
+      # API connects as the least-privilege role; migrations run as the owner
+      DATABASE_URL: postgresql://staysync_app:ci-app-password@localhost:5432/staysync
+      MIGRATION_DATABASE_URL: postgresql://staysync:ci-only-password@localhost:5432/staysync
+      TEST_DATABASE_URL: postgresql://staysync_app:ci-app-password@localhost:5432/staysync_test
+      TEST_MIGRATION_DATABASE_URL: postgresql://staysync:ci-only-password@localhost:5432/staysync_test
+      SHADOW_DATABASE_URL: postgresql://staysync:ci-only-password@localhost:5432/staysync_shadow
+      CORS_ORIGINS: http://localhost:4200
+      MAIL_TRANSPORT: log
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Create databases and the least-privilege API role
+        run: |
+          psql -h localhost -U staysync -d staysync -c "CREATE DATABASE staysync_test" -c "CREATE DATABASE staysync_shadow"
+          for db in staysync staysync_test; do
+            psql -h localhost -U staysync -d $db -v ON_ERROR_STOP=1 -v app_password=ci-app-password -f infra/postgres/app-role.sql
+          done
+      - name: Generate a throwaway encryption key
+        run: echo "DATA_ENCRYPTION_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Migrations apply cleanly
+        run: npm run db:deploy
+      - name: Schema and migrations are in sync (no drift)
+        run: ADMIN_URL=postgresql://staysync:ci-only-password@localhost:5432/postgres scripts/check-drift.sh
+      - name: No known high-severity vulnerabilities in production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API/worker image
+        run: docker build -f infra/docker/api.Dockerfile --target runtime -t staysync-api:ci .
+      - name: Build migration image
+        run: docker build -f infra/docker/api.Dockerfile --target migrate -t staysync-migrate:ci .
+      - name: Build web/edge image
+        run: docker build -f infra/docker/web.Dockerfile -t staysync-web:ci .
+      - name: Validate the Caddy configuration
+        run: docker run --rm -e DOMAIN=app.example.com -e ACME_EMAIL=ops@example.com staysync-web:ci caddy validate --config /etc/caddy/Caddyfile
+      - name: Validate the production compose file
+        run: docker compose -f infra/docker-compose.prod.yml --env-file infra/.env.production.example config --quiet

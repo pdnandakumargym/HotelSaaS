@@ -1,0 +1,45 @@
+# StaySync HTTPS edge. Caddy obtains and renews the TLS certificate for {$DOMAIN} automatically
+# (the DNS name must point at this server and ports 80/443 must be reachable).
+{
+	email {$ACME_EMAIL}
+	servers {
+		# Only Caddy talks to the API; the API trusts exactly one proxy hop (TRUST_PROXY=1).
+		protocols h1 h2 h3
+	}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		-Server
+	}
+
+	# API (also signed photo links under /api/v1/media). Request bodies are limited by the API itself.
+	handle /api/* {
+		reverse_proxy api:3000 {
+			header_up X-Request-Id {http.request.uuid}
+		}
+	}
+
+	# Angular app: hashed assets cached for a year, index.html never cached.
+	handle {
+		root * /srv
+		@assets path *.js *.css *.woff2 *.woff *.png *.svg *.ico *.webp
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
