@@ -36,9 +36,10 @@ import { PhotoGallery } from '../../../shared/ui/photo-gallery/photo-gallery';
         <h2 class="ss-card__title">Photos</h2>
         <ss-photo-gallery [propertyId]="id" [roomTypes]="roomTypes()" [canWrite]="canWrite()" />
         <p class="ss-alert ss-alert--info booking">
-          <strong>Booking.com:</strong> photos are kept in StaySync for now. Zodomus's photo call (<code>POST /property</code>) does not document how to
-          update an existing Booking.com property, so StaySync does not send photos yet (a wrong call could create a new property).
-          For the Booking.com review, add photos in the Booking.com extranet.
+          <strong>Note:</strong> photos are kept in StaySync for now; StaySync does not send them to any connected channel yet
+          (for Booking.com via Zodomus, the API call to update an existing property's photos isn't documented, and a wrong call could create a
+          duplicate property; Beds24 photo support isn't implemented yet either). Add photos directly where the channel needs them: the
+          Booking.com extranet, or your Beds24 account.
         </p>
       </section>
     } @else if (loaded()) {

@@ -655,8 +655,9 @@ model ChannelConnection {
   discrepancies Discrepancy[]
 
   @@unique([organizationId, id])
-  /// A channel property can be connected to only one StaySync property, platform-wide.
-  @@unique([provider, environment, channelId, channelPropertyId])
+  /// A channel property can be connected to only one StaySync property at a time, platform-wide.
+  /// Enforced as a partial unique index (WHERE status <> 'DISCONNECTED') by migration, so disconnecting
+  /// frees the channel property id for reuse on a different StaySync property; not representable here.
   @@unique([propertyId, provider, channelId])
   @@map("channel_connections")
 }

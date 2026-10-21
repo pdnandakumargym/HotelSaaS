@@ -56,10 +56,10 @@ type Draft = Record<string, { roomTypeId: string; rates: Record<string, string> 
     @if (error(); as e) { <p class="ss-alert ss-alert--error" role="alert">{{ e }}</p> }
     @if (notice(); as n) { <p class="ss-alert ss-alert--success" role="status">{{ n }}</p> }
 
-    @if (readyProviders().length > 1) {
+    @if (selectableProviders().length > 1) {
       <div class="providers" role="radiogroup" aria-label="Channel manager">
-        @for (p of readyProviders(); track p.id) {
-          <label class="radio"><input type="radio" name="provider" [value]="p.id" [checked]="provider() === p.id" (change)="chooseProvider(p.id)" /> {{ p.id === 'zodomus' ? 'Booking.com via Zodomus' : 'Beds24 (every channel connected in your Beds24 account)' }}</label>
+        @for (p of selectableProviders(); track p.id) {
+          <label class="radio"><input type="radio" name="provider" [value]="p.id" [checked]="provider() === p.id" (change)="chooseProvider(p.id)" /> {{ p.id === 'zodomus' ? 'Booking.com via Zodomus' : 'Beds24 (every channel connected in your Beds24 account)' }}{{ !p.ready ? ' (not enabled)' : '' }}</label>
         }
       </div>
     }
@@ -250,7 +250,8 @@ export class Mapping {
   /** Selected channel manager; Zodomus unless the owner picks Beds24. */
   protected readonly provider = signal<string>('zodomus');
   private readonly allConnections = signal<ChannelConnection[]>([]);
-  protected readonly readyProviders = computed(() => (this.options()?.providers ?? []).filter((p) => p.ready));
+  /** Every configured channel manager, so the owner can switch even if the default one isn't ready. */
+  protected readonly selectableProviders = computed(() => this.options()?.providers ?? []);
   protected readonly opt = computed(() => {
     const o = this.options();
     if (!o) return null;
@@ -283,9 +284,10 @@ export class Mapping {
         this.roomTypes.set(r.roomTypes.filter((t) => t.status === 'ACTIVE'));
         this.plans.set(r.plans.filter((x) => x.status === 'ACTIVE'));
         this.allConnections.set(r.connections);
-        // Show the provider that already has a connection; otherwise Zodomus.
+        // Show the provider that already has a connection; otherwise the first ready one (Zodomus unless only Beds24 is enabled).
         const existing = r.connections.find((c) => c.status !== 'DISCONNECTED');
-        this.chooseProvider(existing?.provider ?? 'zodomus');
+        const fallback = r.options.providers?.find((p) => p.ready)?.id ?? 'zodomus';
+        this.chooseProvider(existing?.provider ?? fallback);
       },
       error: (e: unknown) => this.error.set(errorMessage(e)),
     });

@@ -89,7 +89,7 @@ const JOB: Record<SyncStatusJob['status'], { label: string; tone: PillTone }> = 
         }
       </section>
     } @empty {
-      @if (loaded()) { <p class="ss-alert ss-alert--info">This property is not connected to a channel yet. <a routerLink="/app/mapping">Connect Booking.com</a></p> }
+      @if (loaded()) { <p class="ss-alert ss-alert--info">This property is not connected to a channel yet. <a routerLink="/app/mapping">Connect Booking.com or Beds24</a></p> }
     }
   `,
   styles: `

@@ -42,12 +42,13 @@ export async function getSubscription(tx: Tx, organizationId: string): Promise<S
 }
 
 export async function usage(tx: Tx, organizationId: string, now = new Date()) {
-  const [properties, members, pendingInvitations] = await Promise.all([
+  const [properties, members, pendingInvitations, channels] = await Promise.all([
     tx.property.count({ where: { organizationId } }),
     tx.organizationMembership.count({ where: { organizationId } }),
     tx.invitation.count({ where: { organizationId, acceptedAt: null, revokedAt: null, expiresAt: { gt: now } } }),
+    tx.channelConnection.count({ where: { organizationId, status: { not: 'DISCONNECTED' } } }),
   ]);
-  return { properties, members, pendingInvitations, users: members + pendingInvitations, channels: 0 };
+  return { properties, members, pendingInvitations, users: members + pendingInvitations, channels };
 }
 
 /** Plan limits are enforced by the API, not the UI. */
